@@ -91,6 +91,22 @@ def child_env(use_ffmpeg):
     return env
 
 
+def webm_options(env):
+    ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
+    if not ffmpeg:
+        raise RuntimeError("Spine video export requires FFmpeg")
+    help_text = subprocess.run([ffmpeg, "-hide_banner", "-h", "filter=setparams"], env=env,
+                               capture_output=True, check=True, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    if b"alpha_mode" not in help_text:
+        return ["-f", "Webm"]  # Older FFmpeg does not negotiate alpha modes.
+    # SpineViewer sends premultiplied RGB without marking the rawvideo input.
+    # Custom's trailing -vf replaces its implicit filter, avoiding dark edges on FFmpeg 8.1+.
+    return ["-f", "Custom", "--ff-format", "webm", "--ff-codec", "libvpx-vp9",
+            "--ff-pixfmt", "yuva420p", "--ff-args",
+            "-crf 23 -vf setparams=alpha_mode=premultiplied,unpremultiply=inplace=1"]
+
+
 def run_cli(cmd, **kwargs):
     # The executable must resolve its own DLLs, not PyInstaller's _internal folder.
     # Its working directory stays with the CLI: model & destination arguments are absolute.
@@ -159,7 +175,8 @@ def main():
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=dest.parent) as folder:
             output = Path(folder).resolve() / ("asset." + fmt.lower())
-            cmd = [*base, "-f", fmt, "-o", output, "--fps", str(args.fps),
+            options = webm_options(env) if fmt == "Webm" else ["-f", fmt]
+            cmd = [*base, *options, "-o", output, "--fps", str(args.fps),
                    "--max-resolution", str(2048 if fmt == "Png" else args.max_resolution)]
             # The CLI sometimes returns success on missing textures or missing FFmpeg.
             run = run_cli(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

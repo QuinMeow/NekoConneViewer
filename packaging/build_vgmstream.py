@@ -83,8 +83,9 @@ def main():
     if win:
         options.extend(["-DBUILD_STATIC=ON", "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
                         "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp"])
-    for language in ("C", "CXX"):
-        options.append(f'-DCMAKE_{language}_FLAGS="-ffile-prefix-map={source.as_posix()}={PREFIX}"')
+    prefix_map = f'"-ffile-prefix-map={source.as_posix()}={PREFIX}"'
+    # Upstream getopt uses legacy C prototypes that GCC's C23 default rejects.
+    options.extend([f"-DCMAKE_C_FLAGS=-std=gnu17 {prefix_map}", f"-DCMAKE_CXX_FLAGS={prefix_map}"])
     subprocess.run(["cmake", "-S", source, "-B", build, "-G", "Ninja", *options], check=True)
     subprocess.run(["cmake", "--build", build, "--target", "vgmstream_cli", "--parallel", str(args.jobs)], check=True)
     binary = build / "cli" / ("vgmstream-cli.exe" if win else "vgmstream-cli")

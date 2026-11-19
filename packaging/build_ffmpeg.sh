@@ -2,6 +2,7 @@
 # Run inside a native shell (MSYS2 UCRT64 on Windows) after media.py --prepare.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.tools/media-build" && pwd)"
+recipe="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 export PATH="$root/usr/bin:$PATH"
 prefix="$root/prefix"
 threads="${BUILD_JOBS:-6}"
@@ -26,7 +27,7 @@ make install
 
 cd "$root/b-ffmpeg"
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
-if [[ ! -f config.h ]]; then
+if [[ ! -f config.h || "$recipe" -nt config.h ]]; then
   "$root/ffmpeg-8.1.1/configure" --disable-autodetect --disable-everything --disable-network \
     --disable-doc --disable-debug --disable-ffplay --disable-ffprobe --disable-shared --enable-static \
     --pkg-config-flags=--static --enable-libopus --enable-libvpx --enable-ffmpeg \
@@ -35,7 +36,7 @@ if [[ ! -f config.h ]]; then
     --enable-decoder=vp9,libvpx_vp9,rawvideo,pcm_s16le,pcm_f32le,hca,opus,libopus,mjpeg \
     --enable-encoder=libvpx_vp9,libopus,pcm_s16le,rawvideo,mjpeg,wrapped_avframe \
     --enable-parser=vp9,opus,mjpeg --enable-bsf=vp9_superframe,vp9_superframe_split \
-    --enable-filter=scale,format,fps,crop,pad,setsar,trim,atrim,setpts,asetpts,aresample,aformat,volume,overlay \
+    --enable-filter=scale,format,fps,crop,pad,setsar,trim,atrim,setpts,asetpts,aresample,aformat,volume,overlay,unpremultiply,premultiply_dynamic,setparams \
     --extra-ldflags=-static --disable-pthreads --enable-w32threads
 fi
 make -j"$threads" ffmpeg"$ext"
