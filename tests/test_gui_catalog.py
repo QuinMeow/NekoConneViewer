@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 from pathlib import Path
@@ -24,9 +25,10 @@ class CatalogDialogTest(unittest.TestCase):
         except tk.TclError as exc:
             self.skipTest(str(exc))
         self.root.withdraw()
+        self.addCleanup(gc.collect)  # Finalize Tk cycles here, not on a later export thread.
         self.addCleanup(self.root.destroy)
-        work = self.enter(tempfile.TemporaryDirectory())
-        self.game, self.cache = Path(work)/"game", Path(work)/"cache"
+        work = Path(self.enter(tempfile.TemporaryDirectory())).resolve()
+        self.game, self.cache = work / "game", work / "cache"
         self.game.mkdir()
         folder = self.cache / "index"
         folder.mkdir(parents=True)
@@ -66,6 +68,8 @@ class CatalogDialogTest(unittest.TestCase):
         self.catalog.assert_called_once_with(self.game, self.cache, assets=None, resource_names=None)
         self.export.assert_not_called()
         self.assertIsNone(self.root.grab_current())
+        buttons = self.root.children["export_roles"].buttons.winfo_children()
+        self.assertNotIn("预览模型…", [button.cget("text") for button in buttons])
         grid = self.root.children["export_roles"].roles
         self.assertEqual(grid.visible, ["10101", "10102"])
         self.assertIsNone(grid.portrait("10101"))
@@ -83,7 +87,7 @@ class CatalogDialogTest(unittest.TestCase):
         self.settle()
         self.assertEqual(self.export.call_args.kwargs,
                          {"characters": ("10101", "10102"), "assets": None,
-                          "resource_names": None, "include_other_roles": False})
+                          "resource_names": None, "include_other_roles": False, "jobs": 2})
         self.assertIn("audio", self.export.call_args.args[2])
         self.v.choose_export_roles()
         self.click("全部素材（1 开头角色、未归属）")

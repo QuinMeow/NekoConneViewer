@@ -14,7 +14,7 @@ from tools.character_index import identifier, image_id, package_id, normalize_ro
 ROOT = Path(__file__).resolve().parent
 MODEL_KINDS = {"cubism", "spine"}
 CATEGORIES = {"images": "图片", "spine": "Spine", "live2d": "Live2D", "audio": "音频", "video": "游戏影片"}
-KINDS = {"image": "图片", "atlas": "图集贴图", "spine": "骨架模型", "cubism": "模型",
+KINDS = {"image": "图片", "atlas": "图集贴图", "spine": "Spine模型", "cubism": "Live2D模型",
          "texture": "模型贴图", "portrait": "渲染静帧", "action": "动作视频", "video": "游戏影片", "audio": "音频"}
 
 
@@ -131,19 +131,31 @@ def scan_args(game, cache, assets=None, resource_names=None):
             *(("--resource-names", Path(resource_names).resolve()) if resource_names else ())]
 
 
-def scan_command(game, cache, categories, *, characters=(), assets=None, resource_names=None, include_other_roles=False):
+def scan_command(game, cache, categories, *, characters=(), assets=None, resource_names=None, include_other_roles=False,
+                 jobs=None):
     return command("scan_assets.py", *scan_args(game, cache, assets, resource_names), *categories,
                    *(arg for number in characters for arg in ("--character", number)),
-                   *(("--include-other-roles",) if include_other_roles else ()))
+                   *(("--include-other-roles",) if include_other_roles else ()),
+                   *(("--jobs", jobs) if jobs is not None else ()))
 
 
 def catalog_command(game, cache, *, assets=None, resource_names=None):
     return command("scan_assets.py", *scan_args(game, cache, assets, resource_names), "--catalog")
 
 
-def motion_choices(asset):
+def model_poster_path(cache, asset):
+    revisions = []
+    for path in sorted(asset.path.parent.rglob("*")):
+        if path.is_file():
+            st = path.stat()
+            revisions.append((path.relative_to(asset.path.parent).as_posix(), st.st_size, st.st_mtime_ns))
+    key = hashlib.sha256(repr((str(asset.path), revisions)).encode()).hexdigest()[:24]
+    return Path(cache) / "index/model-previews/library" / (key + ".png")
+
+
+def motion_choices(asset, metadata=None):
     if asset.kind == "spine":
-        meta = spine_meta(asset)
+        meta = spine_meta(asset) if metadata is None else metadata
         return {f"{skin or '(setup)'} / {a['name']}": (skin, i)
                 for skin in (meta.get("skins") or [""]) for i, a in enumerate(meta.get("animations", []))}
     if asset.kind != "cubism":

@@ -3,9 +3,9 @@
 ## 功能
 
 - **图片**：浏览角色立绘、皮肤和场景图，按名称或编号查找，导出为 PNG。也可以导入 UnityFS 素材包和 DDS 贴图。
-- **模型与动作**：导出 Live2D 和 Spine 模型及贴图。Live2D 支持按屏幕尺寸输出，保留完整角色，背景可替换或设为透明。Spine 可批量渲染动作与皮肤，自动裁去透明留白。
+- **模型与动作**：导出 Live2D 和 Spine 模型及贴图。素材库可预览首帧，也可多选模型后批量渲染。Live2D 支持按屏幕尺寸输出，Spine 会裁去透明留白。
 - **角色筛选**：启动后显示本机游戏头像网格，角色和变体统一按五位 ID 归组。默认显示 `1` 开头的角色，勾选后可纳入其他角色。导出前可多选，导出后也可点头像筛选。
-- **音频与影片**：将识别到的 CRI 语音、音乐和音效导出为 WAV；将游戏影片导出为 WebM，保留可解码的音轨。
+- **音频与影片**：将识别到的 CRI 语音、音乐和音效导出为 WAV；将游戏影片导出为 WebM，保留可解码的音轨。视频可在素材库中直接播放。
 - **动态壁纸**：用图片或视频生成 Wallpaper Engine 网页壁纸，也可以用渲染好的 Live2D 动作制作带待机和点击反应的角色壁纸。
 
 ## 快速开始
@@ -14,7 +14,8 @@
 
 1. 下载 [Windows x64 便携版 ZIP](https://github.com/QuinMeow/NekoConneViewer/releases/latest/download/NekoConneViewer-windows-x64.zip)，完整解压到可写目录，双击 `NekoConneViewer.exe`。
 2. 选择 Steam 中的 NekoConne 安装目录。程序先从本机建立角色目录，再让你选角色和导出类别；只选角色不会马上开始导出。
-3. 点击「运行所选任务」。各类素材平级写入缓存，未识别项见 `index/report.json`。点击「生成壁纸」后，把 `wallpapers/` 中对应的 `index.html` 拖入 Wallpaper Engine 编辑器。
+3. 点击「导出所选类别」。并行解包默认使用两个工作线程，可在主窗口调至 1–4。各类素材平级写入缓存，未识别项见 `index/report.json`。
+4. 在素材库中预览或渲染结果。点击「生成壁纸」后，把 `wallpapers/` 中对应的 `index.html` 拖入 Wallpaper Engine 编辑器。
 
 便携版适用于 Windows 10/11 x64，已包含 Python、FFmpeg 和语音解码器。只有首次渲染 Spine 动作需要联网：程序自动下载渲染组件，校验后缓存，下次可离线使用。Live2D 渲染使用游戏自带的 Cubism Core 和显卡的 OpenGL 驱动。
 

@@ -6,7 +6,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 FROZEN = bool(getattr(sys, "frozen", False))
 APP_HOME = Path(sys.executable).resolve().parent if FROZEN else SOURCE
-WORKERS = ("scan_assets", "render_native", "render_spine", "export_audio", "export_video")
+WORKERS = ("scan_assets", "model_previews", "render_native", "render_spine", "export_audio", "export_video")
 
 
 def tool_home():

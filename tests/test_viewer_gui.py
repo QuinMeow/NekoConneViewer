@@ -1,5 +1,6 @@
 """Desktop smoke tests using generated fixtures; no installation or game media needed."""
 
+import gc
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ class ViewerSmokeTest(unittest.TestCase):
         except tk.TclError as exc:
             self.skipTest(f"Tk desktop unavailable: {exc}")
         self.root.withdraw()
+        self.addCleanup(gc.collect)
         self.addCleanup(self.root.destroy)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -153,6 +155,64 @@ class ViewerSmokeTest(unittest.TestCase):
         self.assertTrue(all(call.kwargs["width"] == 1920 for call in render.call_args_list))
         self.select(ui.JOBS["images"])
         self.assertIn("disabled", v.batch_button.state())
+
+    def test_extended_selection_queues_every_model_and_ignores_images(self):
+        v = self.viewer
+        assets = v.assets
+        original = next(a for a in assets if a.kind == "cubism")
+        path = self.cache / "live2d/Second/Second.model3.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original.path.read_bytes())
+        other = ui.core.Asset("cubism", "Second", path, category="live2d")
+        v.set_library([*assets, other])
+        v.tree.selection_set(*v.tree.get_children())
+        v.tree.focus("0")
+        v.show_preview()
+        self.assertNotIn("disabled", v.batch_button.state())
+        self.stub(patch.object(v, "choose_model_batch", return_value=False))
+        self.stub(patch.object(v, "render_options", return_value={"width": 1920, "height": 1080}))
+        command = [sys.executable, "-u", "-c", "print('queued model')"]
+        render = self.stub(patch.object(ui.core, "render_command", return_value=command))
+        v.render_batch()
+        self.wait_idle()
+        self.assertEqual({call.args[0] for call in render.call_args_list}, {original, other})
+
+    def test_inline_video_follows_selection_and_does_not_restart_on_resize(self):
+        v = self.viewer
+        path = self.cache / "clip.webm"
+        path.touch()
+        asset = ui.core.Asset("video", "clip", path, category="video")
+        v.set_library([asset])
+        show = self.stub(patch.object(v.video, "show", side_effect=lambda p: setattr(v.video, "path", p)))
+        resize = self.stub(patch.object(v.video, "resize"))
+        stop = self.stub(patch.object(v.video, "stop", side_effect=lambda: setattr(v.video, "path", None)))
+        v.tree.selection_set("0")
+        v.show_preview()
+        v.show_preview()
+        show.assert_called_once_with(path)
+        resize.assert_called()
+        v.tree.selection_remove("0")
+        v.show_preview()
+        stop.assert_called_once()
+
+    def test_focused_model_requests_poster_without_exporting_video(self):
+        v = self.viewer
+        game = self.work / "game"
+        data = game / "NekoConne_Data"
+        data.mkdir(parents=True)
+        (data / "data.unity3d").touch()
+        v.game.set(str(game))
+        self.root.after_cancel(v.path_timer)
+        v.path_timer = None
+        v.set_library(ui.core.library(self.cache))
+        launch = self.stub(patch.object(v.poster_job, "start"))
+        self.select(ui.JOBS["live2d"])
+        v.show_preview()
+        launch.assert_called_once()
+        command = launch.call_args.args[0]
+        self.assertIn("--model", command)
+        self.assertIn("--png", command)
+        self.assertNotIn("--webm", command)
 
 
 if __name__ == "__main__":

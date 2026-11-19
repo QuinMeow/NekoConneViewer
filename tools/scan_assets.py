@@ -1,7 +1,11 @@
 """Scan an installed copy once, then export the selected categories."""
 import argparse
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 import csv
+from dataclasses import dataclass
+from filecmp import cmp
+from itertools import chain, islice
 import os
 from pathlib import Path
 import re
@@ -13,9 +17,11 @@ from viewer_runtime import tool_home
 from . import character_index, export_audio, export_cubism, export_video
 from .asset_catalog import catalog
 from .import_bundles import Importer, files, key, linked
-from .resource_sources import FORMATS, IMAGE_KINDS, Image, check_paths, discover, display_bitmap, load_env, read, stamp, write
+from .resource_sources import FORMATS, IMAGE_KINDS, Image, Source, check_paths, discover, display_bitmap, load_env, read, stamp, write
 
 CATEGORIES = ("images", "spine", "live2d", "audio", "video")
+MAX_VISUAL_JOBS = 4
+
 def loose_model(path):
     stat = read(path, {})
     refs = stat["FileReferences"]
@@ -62,14 +68,15 @@ def unpack(source, cache, selected, workspace, scope, references=()):
                 outputs.append(target.relative_to(cache).as_posix())
             results["live2d"]["assets"] = [dict(title=title, kind="cubism", source=rel, file=outputs[0], outputs=outputs)]
         return results
-    worker = Importer(workspace)
     if source.kind in IMAGE_KINDS:
+        worker = Importer(cache)
         if image_match(source.image_ref()):
             with source.open() as stream, Image.open(stream, formats=("DDS", "PNG", "JPEG")) as im:
                 worker.image(display_bitmap(im, source.name), source.image_ref(im.format))
-        results["images"]["assets"] = publish_images(cache, workspace, worker.assets)
+        results["images"]["assets"] = worker.assets
         return results
 
+    worker = Importer(workspace)
     with source.open() as stream:
         env = load_env(stream, source.name or rel)
         if selected & {"images", "spine"}:
@@ -83,8 +90,9 @@ def unpack(source, cache, selected, workspace, scope, references=()):
             models = [r for r in worker.assets if r["kind"] == "spine"]
             for r in models:
                 folder = Path(r["file"]).parent
-                r["outputs"] = [(folder / f.name).as_posix() for f in (workspace / folder).iterdir() if f.is_file()]
-                shutil.copytree(workspace / folder, cache / folder, dirs_exist_ok=True)
+                r["outputs"] = sorted((folder / f.name).as_posix() for f in (workspace / folder).iterdir() if f.is_file())
+                (cache / folder).parent.mkdir(parents=True, exist_ok=True)
+                (workspace / folder).rename(cache / folder)
             results["spine"] = {"assets": models, "issues": [r for r in worker.issues if r.get("type") == "TextAsset" or r.get("status")]}
         publish_images(cache, workspace, results.get("images", {}).get("assets", []))
         if "live2d" in selected:
@@ -118,6 +126,135 @@ def reusable(cache, row, revision, scope_fields):
         return False
     return all((cache / file).is_file()
                for asset in row["assets"] for file in asset.get("outputs", [asset["file"]]))
+
+
+@dataclass
+class VisualTask:
+    source: Source
+    categories: set
+    revision: list
+    references: list
+
+
+def output_units(category, rows):
+    """One PNG or one whole model directory is moved as a unit."""
+    for row in rows:
+        main = Path(row["file"])
+        if len(main.parts) < 2 or main.is_absolute() or ".." in main.parts or main.parts[0] != category:
+            raise ValueError(f"Invalid {category} output: {main}")
+        unit = Path(*main.parts[:2])
+        files = {Path(f) for f in row.get("outputs", [row["file"]])}
+        if main not in files or any(".." in f.parts or not f.is_relative_to(unit) for f in files):
+            raise ValueError(f"Invalid output list for {main}")
+        yield unit, files
+
+
+def saved_assets(row):
+    return chain(row["assets"], row.get("retained", ()))
+
+
+def publish_source(cache, staged, results, owner, claims, previous):
+    prior = {unit: files for cat, group in previous.items() for unit, files in output_units(cat, saved_assets(group))}
+    moves = []
+    claimed = set()
+    for cat, group in sorted(results.items()):
+        for unit, files in output_units(cat, group["assets"]):
+            if unit in claimed or claims.get(unit, owner) != owner:
+                raise ValueError(f"Conflicting source ownership of output: {unit}")
+            claimed.add(unit)
+            src, dst = staged / unit, cache / unit
+            if not src.exists() or dst.resolve() != cache / unit or dst.is_symlink():
+                raise ValueError(f"Missing or redirected visual output: {unit}")
+            staged_entries = list(src.rglob("*")) if src.is_dir() else [src]
+            if (any(linked(p) for p in staged_entries) or
+                    {p.relative_to(staged) for p in staged_entries if p.is_file()} != files):
+                raise ValueError(f"Staged files do not match the output list: {unit}")
+            if dst.exists():
+                if dst.is_dir() != src.is_dir():
+                    raise ValueError(f"Unexpected output type: {unit}")
+                entries = list(dst.rglob("*")) if dst.is_dir() else [dst]
+                if any(linked(p) for p in entries):
+                    raise ValueError(f"Linked entry in existing output: {unit}")
+                actual = {p.relative_to(cache) for p in entries if p.is_file()}
+                allowed_dirs = {p for f in prior.get(unit, files) for p in f.parents}
+                if any(p.is_dir() and p.relative_to(cache) not in allowed_dirs for p in entries):
+                    raise ValueError(f"Unowned directories at output: {unit}")
+                if unit not in prior or not actual <= prior[unit]:
+                    # An identical orphan can remain after an interrupted index write.
+                    if actual == files and all(cmp(staged / f, cache / f, shallow=False) for f in actual):
+                        continue
+                    raise ValueError(f"Unowned files at output: {unit}")
+            moves.append(unit)
+    # This is the only writer to the shared cache. Preflight the whole group
+    # above and restore previous versions if any rename in this source fails.
+    undo = staged.parent / "prior"
+    backed, installed = [], []
+    try:
+        for unit in moves:
+            dst = cache / unit
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                (undo / unit).parent.mkdir(parents=True, exist_ok=True)
+                dst.rename(undo / unit)
+                backed.append(unit)
+            (staged / unit).rename(dst)
+            installed.append(unit)
+    except BaseException:
+        try:
+            for unit in reversed(installed):
+                (cache / unit).rename(staged / unit)
+            for unit in reversed(backed):
+                (undo / unit).rename(cache / unit)
+        except OSError as exc:
+            rescue = Path(tempfile.mkdtemp(prefix="visual-recovery-", dir=cache / "index"))
+            if undo.exists():
+                undo.rename(rescue / "previous")
+            raise OSError(f"Could not restore all source outputs. See {rescue}") from exc
+        raise
+    claims.update((unit, owner) for unit in claimed)
+
+
+def run_visual_tasks(tasks, cache, idx, scope, state, jobs):
+    """Decode in isolated workspaces; publish in input order with at most jobs pending."""
+    claims = {unit: rel for rel, cats in state.items() for cat, row in cats.items()
+              for unit, _ in output_units(cat, saved_assets(row))}
+    with tempfile.TemporaryDirectory(dir=idx) as tmp, ThreadPoolExecutor(max_workers=jobs) as pool:
+        def submit(number, task):
+            work = Path(tmp) / str(number)
+            work.mkdir()
+            future = pool.submit(unpack, task.source, work / "out", task.categories,
+                                 work / "scratch", scope, task.references)
+            return task, work, future
+
+        pending = iter(enumerate(tasks))
+        queue = deque(submit(*item) for item in islice(pending, jobs))
+        while queue:
+            task, work, future = queue.popleft()
+            source = task.source
+            prior = state.setdefault(source.relative, {})
+            try:
+                results = future.result()
+                publish_source(cache, work / "out", results, source.relative, claims, prior)
+            except Exception as exc:
+                results = {cat: {"assets": [], "retry": True,
+                                 "issues": [dict(source=source.relative, status="failed", reason=str(exc))]}
+                           for cat in sorted(task.categories)}
+            for cat, result in sorted(results.items()):
+                # Filtering a model/part out of this index does not make its
+                # previous files anonymous. Preserve ownership for later rebuilds.
+                active = {unit for unit, _ in output_units(cat, result["assets"])}
+                retained = [dict(file=row["file"], outputs=row.get("outputs", [row["file"]]))
+                            for row in saved_assets(prior.get(cat, {"assets": []}))
+                            if Path(*Path(row["file"]).parts[:2]) not in active]
+                if retained:
+                    result["retained"] = retained
+                if source.name:
+                    for asset in result["assets"]:
+                        asset["resource_name"] = source.name
+                prior[cat] = dict(stamp=task.revision, **scope.manifest(), **result)
+            shutil.rmtree(work)
+            if item := next(pending, None):
+                queue.append(submit(*item))
 
 
 def write_characters(idx):
@@ -215,7 +352,9 @@ def media(cache, game, scanned, selected, index_dir, scope):
             write(record, dict(game=str(game), sources=clips, codecs=signatures))
 
 
-def run(game, cache, selected, characters=(), assets=None, listing=None, include_other_roles=False):
+def run(game, cache, selected, characters=(), assets=None, listing=None, include_other_roles=False, jobs=2):
+    if not 1 <= jobs <= MAX_VISUAL_JOBS:
+        raise ValueError(f"Visual --jobs must be between 1 and {MAX_VISUAL_JOBS}")
     game, cache = game.resolve(), cache.resolve()
     check_paths(game, cache, assets)
     scope = character_index.RoleScope.from_ids(characters, include_other_roles)
@@ -243,7 +382,8 @@ def run(game, cache, selected, characters=(), assets=None, listing=None, include
             associated_images.setdefault(row["_assetBundleName"], set()).add(number)
     hits = rebuilt = 0
     revisions = {}
-    for rel, source in scanned.items():
+    tasks = []
+    for rel, source in sorted(scanned.items()):
         references = []
         signature = source.output_revision
         if source.kind == "loose_live2d" and ("live2d" in active or rel in state):
@@ -263,22 +403,15 @@ def run(game, cache, selected, characters=(), assets=None, listing=None, include
         hits += len(categories - pending)
         if pending:
             rebuilt += len(pending)
-            with tempfile.TemporaryDirectory(dir=idx) as temp:
-                try:
-                    results = unpack(source, cache, pending, Path(temp), scope, references)
-                except Exception as exc:
-                    results = {k: {"assets": [], "retry": True,
-                                   "issues": [dict(source=rel, status="failed", reason=str(exc))]} for k in pending}
-            for category, result in results.items():
-                if source.name:
-                    for asset in result["assets"]:
-                        asset["resource_name"] = source.name
-                sources[category] = dict(stamp=signature, **scope_fields, **result)
+            tasks.append(VisualTask(source, pending, signature, references))
+    if tasks:
+        print(f"Visual export: {len(tasks):,} sources, up to {min(len(tasks), jobs)} workers.", flush=True)
+        run_visual_tasks(tasks, cache, idx, scope, state, jobs)
     output_assets = []
-    for rel, categories in state.items():
+    for rel, categories in sorted(state.items()):
         if rel not in scanned:
             continue
-        for category, row in categories.items():
+        for category, row in sorted(categories.items()):
             if row["stamp"] == revisions.get(rel):
                 output_assets.extend(dict(category=category, **it) for it in row["assets"])
                 problems.extend({"category": category, "status": "failed", **it} for it in row["issues"])
@@ -325,9 +458,13 @@ if __name__ == "__main__":
     p.add_argument("--resource-names", type=Path, help="additional local resource names (.txt / .json / .md)")
     p.add_argument("--character", action="append", default=[])
     p.add_argument("--include-other-roles", action="store_true")
+    p.add_argument("--jobs", type=int, choices=range(1, MAX_VISUAL_JOBS + 1),
+                   help="concurrent visual sources during game export (default: 2)")
     p.add_argument("--catalog", action="store_true")
     p.add_argument("categories", nargs="*")
     a = p.parse_args()
+    if a.jobs is not None and (a.input or a.catalog):
+        p.error("--jobs applies only to --game category export")
     if a.input:
         if a.categories:
             p.error("Categories apply to --game only")
@@ -349,4 +486,4 @@ if __name__ == "__main__":
         else:
             if any(not re.fullmatch(r"\d{5}|\d{7,8}", n) for n in a.character):
                 p.error("Character identifiers must be five, seven, or eight digits")
-            run(a.game, a.out, set(a.categories), a.character, assets, listing, a.include_other_roles)
+            run(a.game, a.out, set(a.categories), a.character, assets, listing, a.include_other_roles, jobs=a.jobs or 2)

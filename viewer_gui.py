@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import viewer_core as core
+from viewer_batch import render_queue
 from viewer_runtime import APP_HOME, command
 from viewer_roles import export_picker, filter_picker, role_entries
 
@@ -24,6 +25,9 @@ except ImportError:
         from PIL import Image, ImageTk
     except ImportError:
         Image = ImageTk = None
+
+from viewer_model_preview import PreviewJob
+from viewer_video import VideoPreview
 
 JOBS = core.CATEGORIES
 OPENABLE = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".wav", ".ogg", ".flac", ".mp3", ".m4a",
@@ -101,6 +105,11 @@ class Viewer:
         ttk.Label(scope, textvariable=self.export_scope).pack(side="left")
         self.reindex_button = ttk.Button(scope, text="重新索引角色", command=lambda: self.refresh(catalog=True))
         self.reindex_button.pack(side="right")
+        self.export_jobs = tk.StringVar(value="2")
+        parallel = ttk.Spinbox(scope, from_=1, to=4, width=3, textvariable=self.export_jobs, state="readonly")
+        parallel.pack(side="right", padx=(3, 8))
+        ttk.Label(scope, text="并行解包").pack(side="right")
+        self.path_controls.append(parallel)
         bar = ttk.Frame(frame)
         bar.pack(fill="x", pady=(0, 8))
         for key, name in JOBS.items():
@@ -122,10 +131,10 @@ class Viewer:
         filters.pack(fill="x", pady=(0, 8))
         ttk.Label(filters, text="查找").pack(side="left")
         ttk.Entry(filters, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=8)
-        self.categories = ttk.Combobox(filters, textvariable=self.category, state="readonly", width=19, values=["全部"])
-        self.categories.pack(side="right")
-        self.file_kinds = ttk.Combobox(filters, textvariable=self.file_kind, state="readonly", width=12)
-        self.file_kinds.pack(side="right", padx=3)
+        self.file_kinds = ttk.Combobox(filters, textvariable=self.file_kind, state="readonly", width=14)
+        self.file_kinds.pack(side="right")
+        self.categories = ttk.Combobox(filters, textvariable=self.category, state="readonly", width=14, values=["全部"])
+        self.categories.pack(side="right", padx=3)
         ttk.Button(filters, text="筛选已导出角色…", command=self.choose_character).pack(side="right", padx=3)
         ttk.Entry(filters, textvariable=self.character, width=9).pack(side="right", padx=(3, 0))
         ttk.Label(filters, text="角色 ID").pack(side="right")
@@ -144,7 +153,7 @@ class Viewer:
         ttk.Button(footer, text="上一页", command=lambda: self.change_page(-1)).pack(side="left")
         ttk.Button(footer, text="下一页", command=lambda: self.change_page(1)).pack(side="right")
         ttk.Label(footer, textvariable=self.page_label).pack()
-        self.tree = ttk.Treeview(left, columns=("kind", "title"), show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(left, columns=("kind", "title"), show="headings", selectmode="extended")
         self.tree.heading("kind", text="类型")
         self.tree.heading("title", text="素材名称")
         self.tree.column("kind", width=90, stretch=False)
@@ -169,9 +178,21 @@ class Viewer:
         self.batch_button.pack(side="right", padx=3)
         self.info = ttk.Label(right, textvariable=self.details, wraplength=290, justify="left")
         self.info.pack(side="bottom", fill="x", pady=6)
+        self.video_bar = ttk.Frame(right)
+        self.video_button = ttk.Button(self.video_bar, text="播放", command=self.toggle_video, state="disabled")
+        self.video_button.pack(side="left")
+        self.video_message = tk.StringVar()
+        ttk.Label(self.video_bar, textvariable=self.video_message, wraplength=220).pack(side="left", padx=6)
         self.canvas = tk.Canvas(right, bg="#e9e4dd", highlightthickness=0, width=290, height=260)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self.on_resize)
+        self.video = VideoPreview(self.canvas, self.video_state)
+        self.playing = False
+        self.tabs.bind("<<NotebookTabChanged>>",
+                       lambda _: self.video.pause() if self.tabs.select() != str(library) else None)
+        self.poster_job = PreviewJob(root, self.terminate)
+        self.poster_path = None
+        self.poster_error = ""
         self.log = tk.Text(logs, wrap="word", state="disabled", bg="#f8f7f3", fg="#27251f", font=("Consolas", 10))
         sb = ttk.Scrollbar(logs, orient="vertical", command=self.log.yview)
         sb.pack(side="right", fill="y")
@@ -295,13 +316,13 @@ class Viewer:
                 or (names is not None and not names.is_file())):
             messagebox.showerror("导出输入", "请确认补充目录和清单文件有效，并使用游戏目录以外的缓存。", parent=self.root)
             return
-        characters, include_others = tuple(self.export_ids), self.export_other
+        characters, include_others, jobs = tuple(self.export_ids), self.export_other, int(self.export_jobs.get())
         self.tabs.select(1)
         self.status.set("正在运行，详情见任务日志。")
 
         def task():
             cmd = core.scan_command(game, cache, keys, characters=characters, assets=extra, resource_names=names,
-                                    include_other_roles=include_others)
+                                    include_other_roles=include_others, jobs=jobs)
             self.commands(cache, [(" / ".join(JOBS[k] for k in keys), cmd)])
         self.launch(task, True)
 
@@ -413,7 +434,7 @@ class Viewer:
         dialog.transient(self.root)
         dialog.grab_set()
         choice = tk.IntVar(value=0 if spine else 1)
-        labels = (("当前皮肤全部动作", "全部皮肤与动作") if spine else ("当前组全部动作", "当前模型全部动作"))
+        labels = (("当前姿势的全部动作", "全部姿势与动作") if spine else ("当前组全部动作", "当前模型全部动作"))
         answer = []
         for i, label in enumerate(labels):
             label += f"（{len(all_motions if i else same)}）"
@@ -427,39 +448,53 @@ class Viewer:
         return answer
 
     def render_batch(self):
-        asset, choice = self.selected(), self.motion_choice.get()
-        if self.busy or not asset or asset.kind not in core.MODEL_KINDS or choice not in self.motion_map:
+        models = self.selected_models()
+        if self.busy or not models:
             return
-        active_group, _ = self.motion_map[choice]
-        all_motions = [(name, *pos) for name, pos in self.motion_map.items()]
-        same = [entry for entry in all_motions if entry[1] == active_group]
-        pending = self.choose_batch(asset.kind, same, all_motions)
-        if not pending:
-            return
+        pending, all_poses = None, False
+        choice = self.motion_choice.get()
+        if len(models) == 1 and models[0] == self.motion_asset and choice in self.motion_map:
+            active_group, _ = self.motion_map[choice]
+            all_motions = [(name, *pos) for name, pos in self.motion_map.items()]
+            same = [entry for entry in all_motions if entry[1] == active_group]
+            pending = self.choose_batch(models[0].kind, same, all_motions)
+            if not pending:
+                return
+        else:
+            all_poses = self.choose_model_batch(models)
+            if all_poses is None:
+                return
         cache = Path(self.cache.get()).expanduser().resolve()
-        options = self.render_options(cache) if asset.kind == "cubism" else {}
+        options = self.render_options(cache) if any(asset.kind == "cubism" for asset in models) else {}
         if options is None:
             return
         self.tabs.select(1)
-        self.status.set(f"正在批量渲染 {len(pending)} 个动作…")
+        self.status.set(f"正在批量渲染 {len(models)} 个模型…")
 
         def task():
-            spine = asset.kind == "spine"
-            meta = core.spine_meta(asset) if spine else None
-            newest = max(f.stat().st_mtime_ns for f in asset.path.parent.rglob("*") if f.is_file()) if spine else 0
-
-            def commands():
-                for name, group, index in pending:
-                    if self.cancel.is_set():
-                        return
-                    if spine:
-                        outputs = core.render_paths(asset, cache, group, index)
-                        if all(f.is_file() and f.stat().st_size and f.stat().st_mtime_ns >= newest for f in outputs):
-                            self.events.put(("log", f"[{name}] 跳过已有结果\n"))
-                            continue
-                    yield name, core.render_command(asset, cache, group, index, metadata=meta, **options)
-            self.commands(cache, commands())
+            self.commands(cache, render_queue(models, cache, options, override=pending, all_poses=all_poses,
+                                              cancelled=self.cancel.is_set, log=lambda msg: self.events.put(("log", msg))))
         self.launch(task, True)
+
+    def choose_model_batch(self, models):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("批量渲染所选模型")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"已选 {len(models)} 个模型。每个模型渲染全部动作，非模型项不参与。").pack(anchor="w")
+        all_poses = tk.BooleanVar(dialog)
+        if any(asset.kind == "spine" for asset in models):
+            ttk.Checkbutton(frame, text="Spine 渲染全部姿势（不勾选时仅渲染默认姿势）",
+                            variable=all_poses).pack(anchor="w", pady=6)
+        result = []
+        def accept():
+            result.append(all_poses.get())
+            dialog.destroy()
+        ttk.Button(frame, text="继续", command=accept).pack(anchor="e", pady=(8, 0))
+        self.root.wait_window(dialog)
+        return result[0] if result else None
 
     @staticmethod
     def terminate(p):
@@ -520,6 +555,8 @@ class Viewer:
                 if self.motion_asset == asset:
                     self.set_motions(choices)
                     self.status.set(f"Spine：{error}" if error else f"Spine 动作索引已就绪：{len(choices)} 个选择。")
+                    if not error:
+                        self.show_preview()
                     if error:
                         self.events.put(("log", f"Spine：{error}\n"))
                 elif self.motion_asset and self.motion_asset.kind == "spine":
@@ -596,7 +633,14 @@ class Viewer:
 
     def selected(self):
         ids = self.tree.selection()
-        return self.matches[int(ids[0])] if ids else None
+        if not ids:
+            return None
+        focus = self.tree.focus()
+        return self.matches[int(focus if focus in ids else ids[0])]
+
+    def selected_models(self):
+        return [asset for i in self.tree.selection()
+                if (asset := self.matches[int(i)]).kind in core.MODEL_KINDS]
 
     def on_resize(self, _):
         if self.resize_timer:
@@ -610,9 +654,11 @@ class Viewer:
         self.update_motion_buttons()
 
     def update_motion_buttons(self):
-        enabled = bool(not self.busy and self.motion_map and self.motion_asset and self.motion_asset.kind in core.MODEL_KINDS)
-        for button in (self.motion_button, self.batch_button):
-            button.state(["!disabled" if enabled else "disabled"])
+        has_motion = bool(not self.busy and self.motion_map and self.motion_asset)
+        models = self.selected_models()
+        batch = not self.busy and bool(models) and (len(models) > 1 or has_motion or self.selected() not in models)
+        self.motion_button.state(["!disabled" if has_motion else "disabled"])
+        self.batch_button.state(["!disabled" if batch else "disabled"])
 
     def set_export_scope(self, ids, *, include_other_roles=False):
         self.export_ids = tuple(sorted(set(ids)))
@@ -668,12 +714,51 @@ class Viewer:
                 self.events.put(("spine", (asset, choices, "")))
         threading.Thread(target=read, daemon=True).start()
 
+    def video_state(self, state, detail):
+        self.playing = state == "playing"
+        self.video_button.configure(text="暂停" if self.playing else "重播" if state == "ended" else "播放")
+        self.video_button.state(["disabled" if state in {"loading", "error", "stopped"} else "!disabled"])
+        self.video_message.set(detail or {"loading": "正在读取视频…", "paused": "已暂停", "ended": "播放完毕"}.get(state, ""))
+
+    def toggle_video(self):
+        if self.playing:
+            self.video.pause()
+        else:
+            self.video.play()
+
+    def poster_for(self, asset):
+        if self.busy:
+            return None, "等待当前任务结束后渲染首帧"
+        game = Path(self.game.get()).expanduser() if self.game.get().strip() else None
+        if not game or not (game / "NekoConne_Data/data.unity3d").is_file():
+            return None, "选择游戏安装目录后可渲染首帧"
+        if asset.kind == "spine" and self.spine_lookup is not None:
+            return None, "等待读取 Spine 模型…"
+        if self.poster_path is None and not self.poster_error:
+            try:
+                cache = Path(self.cache.get()).expanduser().resolve()
+                self.poster_path = core.model_poster_path(cache, asset)
+            except OSError as exc:
+                self.poster_error = str(exc)
+            else:
+                if not self.poster_path.is_file():
+                    cmd = command("model_previews.py", "--game", game, "--model", asset.path, "--png", self.poster_path)
+                    def ready(error):
+                        self.poster_error = error
+                        self.show_preview()
+                    self.poster_job.start(cmd, ready)
+        if self.poster_path is not None and self.poster_path.is_file():
+            return self.poster_path, ""
+        return None, f"首帧预览失败：{self.poster_error}" if self.poster_error else "正在渲染首帧…"
+
     def show_preview(self):
         if self.resize_timer:
             self.root.after_cancel(self.resize_timer)
         self.resize_timer = None
         asset = self.selected()
         if asset != self.motion_asset:
+            self.poster_job.stop()
+            self.poster_path, self.poster_error = None, ""
             self.motion_asset = asset
             self.set_motions({})
             if asset and asset.kind == "spine":
@@ -683,12 +768,27 @@ class Viewer:
                     self.set_motions(core.motion_choices(asset))
                 except (KeyError, ValueError, OSError) as exc:
                     self.status.set(f"动作索引不可读：{exc}")
+        self.update_motion_buttons()
+        self.details.set("\n".join(v for v in (asset.title, asset.character_id, asset.note, str(asset.path)) if v) if asset else "")
+        if asset and asset.kind in {"video", "action"} and asset.path.is_file():
+            self.video_bar.pack(side="bottom", fill="x", pady=(3, 0))
+            if self.video.path != asset.path:
+                self.canvas.delete("all")
+                self.photo = None
+                self.video.show(asset.path)
+            else:
+                self.video.resize()
+            return
+        if self.video.path is not None:
+            self.video.stop()
+        self.video_bar.pack_forget()
         self.canvas.delete("all")
         self.photo = None
         w, h = max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
-        self.details.set("\n".join(v for v in (asset.title, asset.character_id, asset.note, str(asset.path)) if v) if asset else "")
         message = "选择素材查看预览" if asset is None else "无静态缩略图，可用「打开」查看"
         image_path = asset.preview if asset else None
+        if asset and asset.kind in core.MODEL_KINDS and not (image_path and image_path.is_file()):
+            image_path, message = self.poster_for(asset)
         if asset and image_path is None and asset.path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
             image_path = asset.path
         if image_path and Path(image_path).is_file():

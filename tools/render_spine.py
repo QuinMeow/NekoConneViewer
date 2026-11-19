@@ -59,9 +59,13 @@ def _download(folder):
                 raise
 
 
+class SpineUnavailable(RuntimeError):
+    """The optional external renderer is unavailable for this run."""
+
+
 def ensure_cli():
     if sys.platform != "win32":
-        raise RuntimeError("The portable Spine component requires Windows x64")
+        raise SpineUnavailable("The portable Spine component requires Windows x64")
     portable = tool_home() / f"spine-{VERSION}-selfcontained"
     local_data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NekoConneViewer/components" / portable.name
     with _lock:
@@ -76,7 +80,7 @@ def ensure_cli():
                 _download(local_data)
                 return local_data / "SpineViewerCLI.exe"
         except (OSError, ValueError, zipfile.BadZipFile) as e:
-            raise RuntimeError(f"Spine 组件首次启用需要连接 GitHub。安装未完成：{e}") from e
+            raise SpineUnavailable(f"Spine 组件首次启用需要连接 GitHub。安装未完成：{e}") from e
 
 
 def child_env(use_ffmpeg):

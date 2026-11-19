@@ -18,7 +18,7 @@ $py = ".\.venv\Scripts\python.exe"
 
 ## 导出与索引
 
-`tools/export_audio.py` 的 `--select` 匹配 cue sheet 名称，`--cli` 指定 vgmstream；`tools/render_spine.py` 的 `--list` 列出指定骨架的动作和皮肤。各脚本都可加 `--help` 查看参数。
+`tools/export_audio.py` 的 `--select` 匹配 cue sheet 名称，`--cli` 指定 vgmstream；`tools/render_spine.py` 的 `--list` 列出指定骨架的动作和姿势（文件中的 `skins` 字段）。各脚本都可加 `--help` 查看参数。
 
 在命令行按类别扫描和导出；已有模型时可生成壁纸。如要换背景，加 `--background .\background.png`。
 

@@ -165,6 +165,7 @@ def main():
     p.add_argument("--game", type=Path)
     p.add_argument("--png", type=Path, required=True)
     p.add_argument("--webm", type=Path)
+    p.add_argument("--poster-first", action="store_true", help="measure and render only pose zero for a model preview")
     p.add_argument("--group", default="Idle")
     p.add_argument("--index", type=int, default=0)
     p.add_argument("--width", type=int, default=1920)
@@ -180,6 +181,8 @@ def main():
         p.error("Use positive even dimensions, 1..120 fps and a positive scale up to 1")
     if args.webm and args.png.resolve() == args.webm.resolve():
         p.error("PNG and WebM must have separate output paths")
+    if args.poster_first and args.webm:
+        p.error("--poster-first is a PNG preview, not a video")
     game = args.game or detect_game()
     if not game:
         p.error("Select your installed game directory in the viewer before rendering.")
@@ -191,8 +194,12 @@ def main():
             raise ValueError("Model references must stay inside its own directory")
         return result
     files = json.loads(args.model.read_text(encoding="utf-8-sig"))["FileReferences"]
-    motion_path = reference(files["Motions"][args.group][args.index]["File"])
-    motion = json.loads(motion_path.read_text(encoding="utf-8-sig"))
+    if args.poster_first and not any(files.get("Motions", {}).values()):
+        motion_path = args.model
+        motion = {"Meta": {"Duration": 1}, "Curves": []}  # A model without motion starts in its setup pose.
+    else:
+        motion_path = reference(files["Motions"][args.group][args.index]["File"])
+        motion = json.loads(motion_path.read_text(encoding="utf-8-sig"))
     duration = float(motion["Meta"]["Duration"])
     if not 0 < duration or not math.isfinite(duration):
         p.error("Invalid motion duration")
@@ -205,7 +212,7 @@ def main():
     if any(v > min(limit, cap) for v, cap in zip(size, viewport)):
         p.error(f"GPU does not support a {size[0]}x{size[1]} framebuffer (texture limit {limit}, viewport {viewport})")
     backdrop = None if args.transparent else make_background(args.background, size)
-    frames = max(1, round(duration * args.fps))
+    frames = 1 if args.poster_first else max(1, round(duration * args.fps))
     poster = min(round(args.fps/2), frames-1)
     def apply_pose(frame):
         sec = frame / args.fps
