@@ -97,13 +97,11 @@ void main() {
 
 
 class Renderer:
-    def __init__(self, m, textures, size, scale):
-        self.model, self.size = m, size
+    def __init__(self, m, textures, size):
+        self.model, self.size = m, None
         self.ctx = ctx = gl.create_standalone_context(require=330)
         self.shader = shader = ctx.program(vertex_shader=VERTEX, fragment_shader=FRAGMENT)
-        self.output = ctx.simple_framebuffer(size, components=4)
-        self.mask = ctx.texture(size, components=4)
-        self.mask_fbo = ctx.framebuffer([self.mask])
+        self.resize(size)
         self.white = ctx.texture((1, 1), 4, b"\xff"*4)
         self.textures = []
         for path in textures:
@@ -114,7 +112,6 @@ class Renderer:
                 tex.repeat_x = tex.repeat_y = False
                 self.textures.append(tex)
         self.buffers, self.meshes = {}, {}
-        bounds = []
         for i in range(m.count):
             if not m.vertices[i] or not m.index_counts[i]:
                 continue
@@ -125,18 +122,37 @@ class Renderer:
             self.buffers[i] = (position, uv, index)
             self.meshes[i] = ctx.vertex_array(shader, [(position, "2f", "p"), (uv, "2f", "uv")],
                                               index_buffer=index, index_element_size=2)
-            if m.visible(i):
-                pos = m.positions[i][:2*n]
-                bounds.append((min(pos[::2]), min(pos[1::2]), max(pos[::2]), max(pos[1::2])))
-        if not bounds:
-            raise ValueError("The model has no visible geometry")
-        x0, y0 = min(b[0] for b in bounds), min(b[1] for b in bounds)
-        x1, y1 = max(b[2] for b in bounds), max(b[3] for b in bounds)
-        pixels = min(size[0] / (x1-x0), size[1] / (y1-y0)) * scale
-        shader["framing"].value = (0.5*(x0+x1), 0.5*(y0+y1), 2*pixels/size[0], 2*pixels/size[1])
-        shader["viewport"].value = size
         shader["atlas"].value, shader["maskTex"].value = 0, 1
         ctx.enable(gl.BLEND)
+
+    def resize(self, size):
+        if self.size == size:
+            return
+        if self.size is not None:
+            self.output.release()
+            self.mask_fbo.release()
+            self.mask.release()
+        self.size = size
+        self.output = self.ctx.simple_framebuffer(size, components=4)
+        self.mask = self.ctx.texture(size, components=4)
+        self.mask_fbo = self.ctx.framebuffer([self.mask])
+        self.shader["viewport"].value = size
+
+    def geometry_bounds(self):
+        m = self.model
+        bounds = []
+        for i in self.meshes:
+            if m.visible(i):
+                pos = m.positions[i][:2*m.vertices[i]]
+                xs, ys = pos[::2], pos[1::2]
+                bounds.append((min(xs), min(ys), max(xs), max(ys)))
+        if bounds:
+            return (min(b[0] for b in bounds), min(b[1] for b in bounds),
+                    max(b[2] for b in bounds), max(b[3] for b in bounds))
+
+    def set_view(self, view):
+        x, y, pixels = view
+        self.shader["framing"].value = (x, y, 2*pixels/self.size[0], 2*pixels/self.size[1])
 
     def draw(self, i, mode, mask_source=False):
         m, ctx, s = self.model, self.ctx, self.shader
@@ -155,7 +171,7 @@ class Renderer:
                           2: (gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE)}[blend]
         self.meshes[i].render()
 
-    def frame(self):
+    def frame(self, alpha_only=False):
         m = self.model
         for i, (buffer, _, _) in self.buffers.items():
             buffer.write(C.string_at(m.positions[i], m.vertices[i]*8))
@@ -178,4 +194,6 @@ class Renderer:
                 mask_ids = mask
             self.draw(i, (2 if m.flags[i] & 8 else 1) if mask else 0)
         pixels = self.output.read(components=4, alignment=1)
+        if alpha_only:
+            return Image.frombytes("L", self.size, pixels[3::4], "raw", "L", 0, -1)
         return Image.frombytes("RGBa", self.size, pixels, "raw", "RGBa", 0, -1).convert("RGBA")

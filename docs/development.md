@@ -12,32 +12,36 @@ $py = ".\.venv\Scripts\python.exe"
 & $py viewer_gui.py
 ```
 
-`NEKOCONNE_GAME` 和 `NEKOCONNE_CACHE` 分别设置初始游戏目录和缓存目录。源码版渲染 Cubism 动作还需执行 `& $py -m pip install -r requirements-render.txt`。便携版走另一条路径，直接调用游戏目录内的 Cubism Core。
+`NEKOCONNE_GAME` 和 `NEKOCONNE_CACHE` 分别设置初始游戏目录和缓存目录。源码版与便携版都用游戏目录内的 Cubism Core。源码版构建媒体工具后，可让 `NEKOCONNE_TOOLS` 指向便携包内的 `.tools/`。
 
 `tests/` 是开发和 CI 用的回归测试，仅随源码提供。`wallpaper/index.html` 和 `wallpaper/project.json` 是生成互动壁纸时使用的模板，便携版把它们放在 `_internal/wallpaper/`。
 
 ## 导出与索引
 
-`tools/export_images.py` 的 `--match` 按名称正则筛图；`tools/export_audio.py` 的 `--select` 匹配 cue sheet 名称，`--cli` 指定 vgmstream；`tools/render_spine.py` 的 `--list` 列出指定骨架的动作和皮肤。各脚本都可加 `--help` 查看参数。
+`tools/export_audio.py` 的 `--select` 匹配 cue sheet 名称，`--cli` 指定 vgmstream；`tools/render_spine.py` 的 `--list` 列出指定骨架的动作和皮肤。各脚本都可加 `--help` 查看参数。
 
-已有模型和精选背景图时，可以在命令行生成壁纸。下面的命令将缺少的动作先渲染，再把项目写入 `exports/projects`；如要换背景，加 `--background .\background.png`。
+在命令行按类别扫描和导出；已有模型时可生成壁纸。如要换背景，加 `--background .\background.png`。
 
 ```powershell
-& $py tools/build_scene.py exports/builtin/cubism/10106_01_S01/10106_01_S01.model3.json --dest exports/projects --render-missing
+& $py -m tools.scan_assets --game $env:NEKOCONNE_GAME --out exports-v2 --catalog
+& $py -m tools.scan_assets --game $env:NEKOCONNE_GAME --out exports-v2 images spine live2d audio video
+& $py tools/build_scene.py exports-v2/live2d/10106_01_S01/10106_01_S01.model3.json --cache exports-v2 --dest exports-v2/wallpapers --render-missing
 ```
 
-在导出缓存中，`builtin/inventory.csv` 记录 Unity 对象路径与编号，`images/index.csv` 记录图片来源及导出结果。用浏览器打开 `video/index.html` 看视频缩略图，或打开 `audio/listen.html` 按 cue 名称、编号试听。外部导入的资源单独记在 `external/<目录标识>/manifest.json`。
+先将 `NEKOCONNE_GAME` 设为自己的游戏安装目录。`--catalog` 只建立头像目录，不导出素材。导出时可重复传入 `--character ID`，角色及其形态统一按五位 ID 归组。默认不导出非 `1` 开头的已归属角色，使用 `--include-other-roles` 可取消该限制。
+
+在缓存中，`index/assets.json` 记录对象来源，`index/catalog.json` 记录预览头像与编号，`index/report.json` 列出无法识别或导出的文件。音频和影片的索引分别在 `index/audio/`、`index/video/`。
 
 ## 实测覆盖
 
-以下是同一份 Steam 安装（Unity 6000.2.15f1）的导出结果。
+以下是同一份 Steam 安装（Unity 6000.2.15f1）的实测结果。游戏更新后数量可能变化，具体以扫描报告为准。
 
 | 类别 | 结果 |
 | --- | --- |
-| 图像 | 2,392 个 Sprite 或 Texture2D 对象导出为 PNG，另存 14 张精选图。Sprite 裁片和原图集有重复，不能按此统计独立立绘。另有 12 个零尺寸字体纹理没有像素。 |
-| Cubism | 1 套模型，2 页纹理、5 段已渲染动作、10 个表情文件。使用包内 MOC3 和从 Unity 播放数据重建的 JSON，未还原全部物理与游戏逻辑。 |
-| Spine | 6 套 4.1.11 骨架，10 页纹理，共 100 个动作条目。每套均已导出合成 PNG 和示例动作视频。另导出 48 张皮肤／方向视图；其中一个 NPC 的 32 个标签在同一姿态下只有 16 种不同画面。 |
-| 语音 | 20,426 条波形记录中有 20,423 条导出为 WAV，另外 3 条缺少完整音库。总时长约 22 小时 27 分，占约 7.8 GB。 |
+| 图像 | 11,755 张外部 DDS 通过像素解码，其中 2,600 张为角色头像和缩略图。内置包另有 2,392 个可导出的图像对象。 |
+| Cubism | 全量扫描导出 218 份模型。其中 1 份来自内置包，12 份技能包模型与对应角色包中的模型逐文件一致。205 个外部角色包含 1,131 段动作和 1,564 个表情。 |
+| Spine | 支持已识别内外部包中的骨架、图集和贴图。动作可批量渲染，按全段动画的固定边界裁切透明 WebM。 |
+| 音频 | 不限定角色和音频类别的全量测试导出 20,854 条 WAV，包含语音、音乐和音效；5 个音库解码失败。 |
 | 视频 | 78 个 VP9 WebM 已逐个完整解码检查。61 个保留音轨（其中一条源轨静音），其余 17 个源视频没有音轨。 |
 
 ## 构建 Windows 便携包

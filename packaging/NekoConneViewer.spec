@@ -1,17 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import sys
 from PyInstaller.utils.hooks import collect_data_files
 
 root = Path(SPECPATH).parent
-workers = ("export_builtin", "export_images", "export_cubism", "export_video",
-           "export_audio", "import_bundles", "render_native", "render_spine")
+sys.path.insert(0, str(root))
+from viewer_runtime import WORKERS
 datas = [(str(root / name), str(Path(name).parent))
          for name in ("wallpaper/index.html", "wallpaper/project.json")]
 datas += collect_data_files("archspec", includes=["json/**/*.json"])
 datas += collect_data_files("UnityPy", includes=["resources/*.tpk"])
 a = Analysis(
     [str(root / "packaging/entry.py")], pathex=[str(root)], binaries=[], datas=datas,
-    hiddenimports=["tools." + name for name in workers] + ["UnityPy", "PIL.ImageTk", "viewer_gui", "glcontext.wgl"],
+    hiddenimports=["tools." + name for name in WORKERS] + ["UnityPy", "PIL.ImageTk", "viewer_gui", "glcontext.wgl"],
     excludes=["fmod_toolkit", "pyfmodex", "numpy", "imageio_ffmpeg", "OpenGL", "live2d", "pygame",
               "IPython", "pytest", "matplotlib", "scipy"],
 )

@@ -1,5 +1,6 @@
 """Use the standalone SpineViewer CLI (v0.16.34) to query or render a skeleton."""
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -91,20 +92,73 @@ def child_env(use_ffmpeg):
     return env
 
 
-def webm_options(env):
-    ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
-    if not ffmpeg:
-        raise RuntimeError("Spine video export requires FFmpeg")
-    help_text = subprocess.run([ffmpeg, "-hide_banner", "-h", "filter=setparams"], env=env,
-                               capture_output=True, check=True, timeout=10,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-    if b"alpha_mode" not in help_text:
-        return ["-f", "Webm"]  # Older FFmpeg does not negotiate alpha modes.
-    # SpineViewer sends premultiplied RGB without marking the rawvideo input.
-    # Custom's trailing -vf replaces its implicit filter, avoiding dark edges on FFmpeg 8.1+.
-    return ["-f", "Custom", "--ff-format", "webm", "--ff-codec", "libvpx-vp9",
-            "--ff-pixfmt", "yuva420p", "--ff-args",
-            "-crf 23 -vf setparams=alpha_mode=premultiplied,unpremultiply=inplace=1"]
+def pillow():
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:
+        if getattr(sys, "frozen", False) or not (_HOME / ".tools/unity/PIL").is_dir():
+            raise
+        sys.path.insert(0, str(_HOME / ".tools/unity"))
+        from PIL import Image
+    return Image
+
+
+def ordered_frames(folder, fps):
+    frame_name = re.compile(rf"frame_{fps}_([0-9]+)\.png\Z")
+    found = sorted((int(match[1]), p) for p in folder.iterdir() if (match := frame_name.fullmatch(p.name)))
+    if not found or any(n != i for i, (n, _) in enumerate(found)):
+        raise ValueError("Spine renderer did not produce a continuous frame sequence starting at zero")
+    return [p for _, p in found]
+
+
+def joint_crop(frames, padding=2):
+    image = pillow()
+    union, canvas = None, None
+    for path in frames:
+        with image.open(path) as frame:
+            if "A" not in frame.getbands() or (canvas and frame.size != canvas):
+                raise ValueError("Expected RGBA frames in a fixed coordinate system")
+            canvas = frame.size
+            box = frame.getchannel("A").getbbox()
+        if box is not None:
+            union = ((min(union[0], box[0]), min(union[1], box[1]), max(union[2], box[2]), max(union[3], box[3]))
+                     if union else box)
+    if union is None:
+        raise ValueError("Spine animation is transparent in every frame; check the selected skin")
+    left, top, right, bottom = union
+    # Even output dimensions for 4:2:0; Pillow supplies transparent padding outside the original canvas.
+    return (left - padding, top - padding, right + padding + ((right-left) % 2),
+            bottom + padding + ((bottom-top) % 2))
+
+
+def write_sequence(frames, fps, png, video, env):
+    image = pillow()
+    box = joint_crop(frames)
+    w, h = box[2] - box[0], box[3] - box[1]
+    if png is not None:
+        with image.open(frames[0]) as frame:
+            frame.crop(box).convert("RGBA").save(png, format="PNG")
+    if video is not None:
+        ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
+        if not ffmpeg:
+            raise RuntimeError("Spine video export requires FFmpeg")
+        # The upstream Frames exporter encodes standard straight-alpha PNGs. Do not unpremultiply again.
+        cmd = [ffmpeg, "-v", "error", "-xerror", "-f", "rawvideo", "-r", str(fps), "-pix_fmt", "rgba",
+               "-s", f"{w}x{h}", "-i", "pipe:0", "-f", "webm", "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+               "-crf", "23", "-b:v", "0", "-y", video]
+        with tempfile.TemporaryFile() as log, subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log, env=env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) as encoder:
+            try:
+                with encoder.stdin as pipe:
+                    for path in frames:
+                        with image.open(path) as frame:
+                            pipe.write(frame.crop(box).convert("RGBA").tobytes())
+            except BrokenPipeError:
+                pass  # Report FFmpeg's own diagnostic instead.
+            if encoder.wait() or not video.is_file() or not video.stat().st_size:
+                log.seek(0)
+                raise RuntimeError("Spine WebM encoding failed: " + log.read().decode("utf-8", "replace"))
+    return box
 
 
 def run_cli(cmd, **kwargs):
@@ -148,7 +202,7 @@ def main():
     p.add_argument("--png", type=Path)
     p.add_argument("--webm", type=Path)
     p.add_argument("--fps", type=int, default=20)
-    p.add_argument("--max-resolution", type=int, default=850, help="video resolution cap; PNG uses 2048")
+    p.add_argument("--max-resolution", type=int, default=850, help="video render resolution cap; PNG-only uses 2048")
     args = p.parse_args()
     if not args.skeleton.is_file():
         p.error("skeleton file not found")
@@ -162,6 +216,8 @@ def main():
         return
     if not args.animation or not (args.png or args.webm):
         p.error("specify --animation and at least one of --png or --webm")
+    if args.png and args.webm and args.png.resolve() == args.webm.resolve():
+        p.error("PNG and WebM must have separate output paths")
     if not (1 <= args.fps <= 120 and 32 <= args.max_resolution <= 4096):
         p.error("invalid frame rate (1..120) or resolution (32..4096)")
     base = [ensure_cli(), "export", args.skeleton.resolve(), "-a", args.animation, "--pma",
@@ -169,22 +225,25 @@ def main():
     if args.skin:
         base.extend(["--skins", *args.skin])
     env = child_env(bool(args.webm))
-    for dest, fmt in ((args.png, "Png"), (args.webm, "Webm")):
-        if not dest:
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=dest.parent) as folder:
-            output = Path(folder).resolve() / ("asset." + fmt.lower())
-            options = webm_options(env) if fmt == "Webm" else ["-f", fmt]
-            cmd = [*base, *options, "-o", output, "--fps", str(args.fps),
-                   "--max-resolution", str(2048 if fmt == "Png" else args.max_resolution)]
-            # The CLI sometimes returns success on missing textures or missing FFmpeg.
-            run = run_cli(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            log = run.stdout.decode("utf-8", errors="replace")
-            if run.returncode or "[E]" in log or not output.exists() or not output.stat().st_size:
-                raise RuntimeError(log or f"no {fmt} produced")
+    with ExitStack() as stack:
+        staged = {}
+        for dest in (args.png, args.webm):
+            if dest:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                parent = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=dest.parent))).resolve()
+                staged[dest] = parent / dest.name
+        folder = next(iter(staged.values())).parent / "frames"
+        cmd = [*base, "-f", "Frames", "-o", folder, "--fps", str(args.fps),
+               "--max-resolution", str(args.max_resolution if args.webm else 2048)]
+        run = run_cli(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        log = run.stdout.decode("utf-8", errors="replace")
+        if run.returncode or "[E]" in log or not folder.is_dir():
+            raise RuntimeError(log or "Spine render failed")
+        frames = ordered_frames(folder, args.fps)
+        box = write_sequence(frames, args.fps, staged.get(args.png), staged.get(args.webm), env)
+        for dest, output in staged.items():
             output.replace(dest)
-            print(f"{args.skeleton.stem} {args.animation} -> {dest}", flush=True)
+            print(f"{args.skeleton.stem} {args.animation}: {len(frames)} frames, crop {box} -> {dest}", flush=True)
 
 
 if __name__ == "__main__":

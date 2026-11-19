@@ -11,7 +11,7 @@ def main():
     packaged = root / "dist/NekoConneViewer/NekoConneViewer.exe"
     if packaged.is_file():
         env = os.environ.copy()
-        if (root / "exports").is_dir():
+        if (root / "exports").is_dir() and not (root / "exports/builtin").exists():
             env.setdefault("NEKOCONNE_CACHE", str(root / "exports"))
         subprocess.Popen([str(packaged)], cwd=root, env=env)
         return

@@ -35,7 +35,7 @@ def prepare():
         subprocess.run(["tar", "-xf", src, "-C", WORK], check=True)
 
 
-def install(app):
+def install(app, dist):
     archive_name = "NekoConneViewer-media-sources-windows-x64.zip"
     licenses = app / "THIRD_PARTY_LICENSES/media"
     licenses.mkdir(parents=True, exist_ok=True)
@@ -59,8 +59,7 @@ def install(app):
         " alongside the matching portable ZIP from https://github.com/QuinMeow/NekoConneViewer/releases/\n\n"
         + "".join(f"{name}: {url}  SHA256 {digest}\n" for name, (url, digest) in UPSTREAM.items()),
         encoding="utf8")
-    dist = ROOT / "dist"
-    dist.mkdir(exist_ok=True)
+    dist.mkdir(exist_ok=True, parents=True)
     with zipfile.ZipFile(dist / archive_name, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as z:
         for name in UPSTREAM:
             if name == "vgmstream-r2168.tar.gz":
@@ -82,8 +81,9 @@ def install(app):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("app", type=Path, nargs="?")
     args = parser.parse_args()
     if args.prepare == bool(args.app):
         parser.error("choose --prepare or a portable app directory")
-    prepare() if args.prepare else install(args.app)
+    prepare() if args.prepare else install(args.app, args.dist)

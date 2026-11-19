@@ -85,9 +85,9 @@ def md5(file):
     return digest.hexdigest()
 
 
-def catalog(game, out):
+def catalog(game, out, inputs=None, *, index_dir=None):
     sheets, banks, errors = [], defaultdict(list), []
-    for path in (game / 'resources').rglob('*'):
+    for path in (game / 'resources').rglob('*') if inputs is None else inputs:
         if not path.is_file():
             continue
         rel = path.relative_to(game).as_posix()
@@ -106,8 +106,9 @@ def catalog(game, out):
         matches = banks.get(sheet['hash'], [])
         sheet['awb'] = min(matches) if matches else ''
     sheets.sort(key=lambda s: (s['name'], s['acb']))
-    (out / 'sheets.json').write_text(json.dumps(sheets, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
-    with (out / 'index-errors.csv').open('w', newline='', encoding='utf-8-sig') as f:
+    index_dir = index_dir or out
+    (index_dir / 'sheets.json').write_text(json.dumps(sheets, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+    with (index_dir / 'index-errors.csv').open('w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(('source', 'error'))
         writer.writerows(errors)
@@ -153,6 +154,8 @@ def export_sheet(sheet, game, out, cli):
         category = safe_name('_'.join(name.split('_')[:2]))
         group = re.search(r'_(\d{5})', name)
         dest = out / 'wav' / category / (group[1] if group else 'other')
+        if sheet.get('_discriminator'):
+            dest /= sheet['_discriminator']
         dest.mkdir(exist_ok=True, parents=True)
         with tempfile.TemporaryDirectory(dir=out) as tmp:
             stage = Path(tmp)
@@ -201,15 +204,39 @@ def decode(sheets, args):
     if not args.cli.is_file():
         raise SystemExit(f'Missing vgmstream-cli: {args.cli}')
     fields = ('sheet', 'cue', 'cue_id', 'subsong', 'frames', 'rate', 'channels', 'sampled_pcm_peak', 'wav')
-    suffix = 'voices' if args.select == '^voice_' else hashlib.sha256(args.select.encode()).hexdigest()[:12]
+    suffix = 'all' if args.select == '' else 'voices' if args.select == '^voice_' else hashlib.sha256(args.select.encode()).hexdigest()[:12]
+    index_dir = getattr(args, 'index_dir', args.out)
+    manifest = index_dir / f'decoded-{suffix}.csv'
+    previous = defaultdict(list)
+    if getattr(args, 'reuse', None) and manifest.is_file():
+        with manifest.open(encoding='utf-8-sig', newline='') as f:
+            for row in csv.DictReader(f):
+                rel = Path(row['wav'])
+                if not rel.anchor and '..' not in rel.parts:
+                    previous[row['sheet']].append([row[k] for k in fields])
+    names = defaultdict(int)
+    for sheet in selected:
+        names[sheet['name']] += 1
+    for sheet in selected:
+        if names[sheet['name']] > 1:
+            sheet['_discriminator'] = hashlib.sha256(sheet['acb'].encode()).hexdigest()[:12]
+
+    def cached_or_export(sheet):
+        rows = previous[sheet['name']]
+        if (names[sheet['name']] == 1 and sheet['acb'] in getattr(args, 'reuse', ()) and
+                len(rows) == sheet['waves'] and all((args.out / r[-1]).is_file() for r in rows)):
+            return rows, ''
+        return export_sheet(sheet, args.game, args.out, args.cli)
+
     good = bad = 0
-    with (args.out / f'decoded-{suffix}.csv').open('w', newline='', encoding='utf-8-sig') as success, \
-         (args.out / f'failed-{suffix}.csv').open('w', newline='', encoding='utf-8-sig') as failure, \
+    stage = manifest.with_suffix('.partial.csv')
+    with stage.open('w', newline='', encoding='utf-8-sig') as success, \
+         (index_dir / f'failed-{suffix}.csv').open('w', newline='', encoding='utf-8-sig') as failure, \
          ThreadPoolExecutor(max_workers=args.jobs) as pool:
         ok, fail = csv.writer(success), csv.writer(failure)
         ok.writerow(fields)
         fail.writerow(('sheet', 'acb', 'error'))
-        for i, (s, (rows, error)) in enumerate(zip(selected, pool.map(lambda s: export_sheet(s, args.game, args.out, args.cli), selected)), 1):
+        for i, (s, (rows, error)) in enumerate(zip(selected, pool.map(cached_or_export, selected)), 1):
             ok.writerows(rows)
             good += len(rows)
             if error:
@@ -219,6 +246,7 @@ def decode(sheets, args):
                 success.flush()
                 failure.flush()
                 print(f'{i}/{len(selected)} sheets; {good} WAVs, {bad} failed sheets', flush=True)
+    stage.replace(manifest)
     print(f'{len(selected)} sheets; {good} WAVs, {bad} failed sheets', flush=True)
 
 

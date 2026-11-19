@@ -1,6 +1,5 @@
 """Import locally selected standard UnityFS and DDS resources; never change the input."""
 
-import argparse
 import hashlib
 import json
 import os
@@ -84,32 +83,50 @@ class Importer:
         dest = self.folder / file
         dest.parent.mkdir(parents=True, exist_ok=True)
         bitmap.save(dest, format='PNG', compress_level=3)
-        self.assets.append(dict(**ref, kind='image', file=file, width=bitmap.width, height=bitmap.height))
+        self.assets.append(dict(ref, kind='image', file=file, width=bitmap.width, height=bitmap.height))
 
     def bundle(self, path, rel):
         # Resolve Unity pointers inside the selected bundle only, not against the host filesystem.
         env = UnityPy.Environment(fs=MemoryFileSystem(), path='')
-        first_asset = len(self.assets)
         with path.open('rb') as file:
             env.load_file(file, name=rel)
+            self.read_env(env, rel)
+
+    def read_env(self, env, rel, *, images=True, spine=True, accept_image=None, accept_spine=None):
+        first_asset = len(self.assets)
+        objects = list(env.objects)
+        aliases = {}
+        for name, pp in env.container.items():
+            try:
+                target = pp.deref()
+            except (KeyError, ValueError, OSError):
+                continue
+            if target is not None:
+                aliases.setdefault((target.assets_file.name, target.path_id), []).append(name)
+        if images or spine:
             atlas_ids = {}
-            for obj in env.objects:
+            textures = []
+            for obj in objects:
                 typ, ser = obj.type.name, obj.assets_file.name
                 if typ not in {'Texture2D', 'Sprite', 'SpriteAtlas', 'TextAsset'}:
                     continue
                 ref = dict(source=rel, serialized_file=ser, path_id=obj.path_id, type=typ, title='')
                 try:
                     name = ref['title'] = obj.peek_name() or str(obj.path_id)
-                    if typ == 'SpriteAtlas':
+                    if paths := aliases.get((ser, obj.path_id)):
+                        ref['container'] = sorted(paths)
+                    if typ == 'SpriteAtlas' and images:
                         for _, target in obj.read().m_RenderDataMap:
                             tex = target.texture.deref()
                             if tex is not None:
                                 refs = atlas_ids.setdefault((tex.assets_file.name, tex.path_id), [])
                                 if ref not in refs:
                                     refs.append(ref)
-                    elif typ in {'Texture2D', 'Sprite'}:
-                        self.image(obj.read().image, ref)
-                    elif re.search(r'\.(atlas|skel|json)(?:\.(txt|bytes))?$', name, re.I):
+                    elif typ == 'Texture2D' and (images or spine):
+                        textures.append((obj, ref))
+                    elif typ == 'Sprite' and images:
+                        textures.append((obj, ref))
+                    elif typ == 'TextAsset' and spine and re.search(r'\.(atlas|skel|json)(?:\.(txt|bytes))?$', name, re.I):
                         text = obj.read().m_Script
                         data = text.encode('utf-8', 'surrogateescape') if isinstance(text, str) else bytes(text)
                         stem, ext = re.sub(r'\.(txt|bytes)$', '', name, flags=re.I).rsplit('.', 1)
@@ -125,6 +142,22 @@ class Importer:
                         self.texts.append((ref, stem.casefold(), ext.lower(), data))
                 except Exception as exc:
                     self.issue(rel, str(exc), serialized_file=ser, path_id=obj.path_id, type=typ)
+            pages = set()
+            if spine and (not images or accept_image is not None):
+                for ref, _, ext, data in self.texts:
+                    if ext == 'atlas':
+                        try:
+                            pages.update(Path(name).stem.casefold() for name, _ in atlas_pages(data))
+                        except ValueError as exc:
+                            self.issue(ref['source'], str(exc), type='TextAsset')
+            for obj, ref in textures:
+                publish = images and (accept_image is None or accept_image(ref))
+                needed = obj.type.name == 'Texture2D' and ref['title'].casefold() in pages
+                if publish or needed:
+                    try:
+                        self.image(obj.read().image, {**ref, **({} if publish else {'private_texture': True})})
+                    except Exception as exc:
+                        self.issue(rel, str(exc), serialized_file=ref['serialized_file'], path_id=ref['path_id'], type=ref['type'])
             for asset in self.assets[first_asset:]:
                 if asset['source'] == rel and (asset['serialized_file'], asset['path_id']) in atlas_ids:
                     asset['kind'] = 'atlas'
@@ -142,10 +175,12 @@ class Importer:
                 break
         raise ValueError(f'expected one matching input but found {len(subset)}')
 
-    def models(self):
+    def models(self, accept=None):
         atlases = [(r, stem, data) for r, stem, ext, data in self.texts if ext == 'atlas']
         for skel, stem, ext, payload in self.texts:
             if ext == 'atlas':
+                continue
+            if accept is not None and not accept(skel['title']):
                 continue
             try:
                 atlas = self.match(skel, [r for r, s, _ in atlases if s == stem])
@@ -169,62 +204,9 @@ class Importer:
                 self.assets.append(dict(**skel, kind='spine', file=skeleton.relative_to(self.folder).as_posix(),
                                         atlas=atlas, pages=[{'page': name, 'image': tex['file']} for name, tex in pages]))
             except (OSError, ValueError) as exc:
-                self.issue(skel['source'], 'incomplete Spine set: ' + str(exc), serialized_file=skel['serialized_file'], path_id=skel['path_id'])
+                self.issue(skel['source'], 'incomplete Spine set: ' + str(exc), status='missing_dependency',
+                           serialized_file=skel['serialized_file'], path_id=skel['path_id'])
         for atlas, stem, _ in atlases:
             if not any(s == stem and ext != 'atlas' for _, s, ext, _ in self.texts):
-                self.issue(atlas['source'], 'atlas without skeleton', serialized_file=atlas['serialized_file'], path_id=atlas['path_id'])
-
-
-def run(source, out, skip=()):
-    if linked(source):
-        raise ValueError('select a regular file or directory, not a symlink/junction')
-    source, out = source.resolve(strict=True), out.resolve()
-    if source.is_relative_to(out) or out.is_relative_to(source):
-        raise ValueError('keep input and external cache directories separate')
-    folder = out / (slug(source.name) + '_' + key(os.path.normcase(str(source))))
-    if not source.is_file() and not source.is_dir():
-        raise ValueError('expected a regular file or directory')
-    folder.mkdir(parents=True, exist_ok=True)
-    work = Importer(folder)
-    skipped = {p.resolve() for p in skip}
-    counts = {'UnityFS': 0, 'DDS': 0, 'unknown': 0, 'skipped': 0}
-    for path, rel in files(source, work.issue):
-        try:
-            if path in skipped:
-                counts['skipped'] += 1
-                work.issue(rel, 'explicitly skipped (already indexed)')
-                continue
-            with path.open('rb') as stream:
-                header = stream.read(8)
-            if header == b'UnityFS\0':
-                counts['UnityFS'] += 1
-                work.bundle(path, rel)
-            elif header.startswith(b'DDS '):
-                counts['DDS'] += 1
-                with Image.open(path, formats=('DDS',)) as bitmap:
-                    work.image(bitmap, dict(source=rel, serialized_file=None, path_id=None, type='DDS', title=path.stem))
-            else:
-                counts['unknown'] += 1
-                work.issue(rel, 'no supported input signature')
-        except Exception as exc:
-            work.issue(rel, str(exc))
-    work.models()
-    manifest = folder / 'manifest.json'
-    tmp = manifest.with_suffix('.tmp')
-    tmp.write_text(json.dumps(dict(schema=1, source=source.name, counts=counts, assets=work.assets, issues=work.issues),
-                              ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(manifest)
-    print(f'{manifest}: {len(work.assets)} assets; {len(work.issues)} issues; {counts}', flush=True)
-    return manifest
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('input', type=Path)
-    parser.add_argument('--out', type=Path, default=ROOT / 'exports/external')
-    parser.add_argument('--skip-bundle', action='append', type=Path, default=[])
-    args = parser.parse_args()
-    try:
-        run(args.input, args.out, args.skip_bundle)
-    except (OSError, ValueError) as err:
-        parser.exit(2, f'{err}\n')
+                self.issue(atlas['source'], 'atlas without skeleton', status='missing_dependency',
+                           serialized_file=atlas['serialized_file'], path_id=atlas['path_id'])

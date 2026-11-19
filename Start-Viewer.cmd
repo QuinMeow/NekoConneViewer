@@ -19,7 +19,7 @@ goto finished
 goto finished
 
 :packaged
-if not defined NEKOCONNE_CACHE if exist "exports\" set "NEKOCONNE_CACHE=%CD%\exports"
+if not defined NEKOCONNE_CACHE if exist "exports\" if not exist "exports\builtin\" set "NEKOCONNE_CACHE=%CD%\exports"
 start "" "dist\NekoConneViewer\NekoConneViewer.exe"
 goto finished
 

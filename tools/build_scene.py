@@ -10,7 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from viewer_core import Asset, motion_choices, render_command, render_paths
+from viewer_core import Asset, motion_choices, render_command, render_paths, scene_image
 
 
 def build(asset, cache, destination, background=None, render_missing=False):
@@ -20,21 +20,18 @@ def build(asset, cache, destination, background=None, render_missing=False):
     target = destination / ("NekoConne-" + asset.path.parent.name)
     if target.exists():
         raise FileExistsError(target)
-    art = cache / "builtin/images"
-    bg = Path(background) if background else art / "bg_quest_upside_01.png"
-    if not bg.is_file():
-        raise FileNotFoundError("请先导出精选场景图片，或在命令行指定 --background。")
+    bg = Path(background) if background else scene_image(cache, "bg_quest_upside_01", "title_bg_pc")
     groups = list(motion_choices(asset).values())
     groups.sort(key=lambda key: key[0].casefold() != "idle")
     if not groups:
         raise ValueError("No motion in this model.")
     clips = []
     for group, index in groups:
-        png, video = render_paths(asset, cache, group, index)
+        png, video = render_paths(asset, cache, group, index, transparent=True)
         if not (png.is_file() and video.is_file()):
             if not render_missing:
-                raise ValueError(f"尚未渲染 {group}[{index}]。先用查看器渲染动作，或运行 build_scene.py --render-missing。")
-            subprocess.run(render_command(asset, cache, group, index), check=True)
+                raise ValueError(f"尚未渲染 {group}[{index}] 的透明版本。请在查看器勾选透明输出，或运行 build_scene.py --render-missing。")
+            subprocess.run(render_command(asset, cache, group, index, transparent=True), check=True)
         clips.append((png, video))
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination) as tmp:
@@ -46,10 +43,13 @@ def build(asset, cache, destination, background=None, render_missing=False):
             if i:
                 actions.append(filename)
             shutil.copyfile(clip, stage / filename)
-        title = art / "title_bg_pc.png"
-        for src, filename in ((bg, "garden.jpg"), (title if title.is_file() else bg, "art.jpg")):
-            with Image.open(src) as im:
-                im.convert("RGB").save(stage / filename, quality=93)
+        title = scene_image(cache, "title_bg_pc")
+        for src, filename in ((bg, "garden.jpg"), (title or bg, "art.jpg")):
+            if src is None:
+                Image.new("RGB", (1920, 1080), "#283448").save(stage / filename, quality=93)
+            else:
+                with Image.open(src) as im:
+                    im.convert("RGB").save(stage / filename, quality=93)
         with Image.open(clips[0][0]) as actor, Image.open(stage / "garden.jpg") as scenery:
             actor.save(stage / "portrait.webp", lossless=True)
             preview = scenery.convert("RGBA")

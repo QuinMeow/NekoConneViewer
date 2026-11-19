@@ -53,7 +53,7 @@ def split(src, scratch):
     return {key: Path(f.name) for key, f in tracks.items()}
 
 
-def export(src, root, dest, ffmpeg, vgmstream=None):
+def export(src, root, dest, ffmpeg, vgmstream=None, *, output_stem=None):
     row = {"source": src.relative_to(root).as_posix(), "file": "", "audio": "",
            "frames": "", "seconds": "", "size": "", "status": "", "preview": "", "subtitles": ""}
 
@@ -121,7 +121,7 @@ def export(src, root, dest, ffmpeg, vgmstream=None):
                 "-vf", "scale=320:-2", thumb)
             if not thumb.is_file():
                 raise ValueError("preview frame not produced")
-            stem = src.name
+            stem = output_stem or src.name
             dest_video = dest / (stem + ".webm")
             output.replace(dest_video)
             thumb.replace(dest / "previews" / (stem + ".jpg"))
@@ -135,15 +135,7 @@ def export(src, root, dest, ffmpeg, vgmstream=None):
     return row
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source", type=Path, required=True, help="game resources directory")
-    p.add_argument("--out", type=Path, default=DEST)
-    p.add_argument("--ffmpeg", type=Path)
-    p.add_argument("--vgmstream", type=Path, help="local vgmstream-cli for supported HCA audio tracks")
-    p.add_argument("--jobs", type=int, default=2)
-    p.add_argument("--retry-failed", action="store_true", help="keep previous entries whose outputs still exist")
-    a = p.parse_args()
+def export_all(a, inputs=None, reuse=None):
     ffmpeg = a.ffmpeg or next((ROOT / ".tools/video").rglob("ffmpeg-*.exe"), None) or shutil.which("ffmpeg")
     if not ffmpeg:
         import imageio_ffmpeg
@@ -151,15 +143,28 @@ def main():
     vgmstream = a.vgmstream or shutil.which("vgmstream-cli") or next(
         (ROOT / ".tools/audio").glob("vgmstream-*/vgmstream-cli.exe"), None)
     (a.out / "previews").mkdir(parents=True, exist_ok=True)
-    inputs = sorted(sources(a.source))
-    if not inputs or len({p.name for p in inputs}) != len(inputs):
-        raise ValueError("missing inputs or duplicate source IDs")
+    inputs = sorted(sources(a.source) if inputs is None else inputs)
+    if not inputs:
+        return []
+    from collections import Counter
+    from hashlib import sha256
+    counts = Counter(p.name.casefold() for p in inputs)
+    def convert(src):
+        rel = src.relative_to(a.source).as_posix()
+        if rel in old and counts[src.name.casefold()] == 1:
+            return old[rel]
+        stem = src.name
+        if counts[stem.casefold()] > 1:
+            stem += "-" + sha256(rel.encode()).hexdigest()[:12]
+        return export(src, a.source, a.out, ffmpeg, vgmstream, output_stem=stem)
     rows = []
     old = {}
-    index = a.out / "index.csv"
-    if a.retry_failed and index.exists():
+    index = getattr(a, "index_dir", a.out) / "index.csv"
+    if (a.retry_failed or reuse is not None) and index.exists():
         with index.open(encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
+                if reuse is not None and row["source"] not in reuse:
+                    continue
                 if row["status"] == "decoded" and all((a.out / row[k]).is_file() for k in ("file", "preview")):
                     if vgmstream and "omitted" in row["audio"]:
                         continue
@@ -167,7 +172,7 @@ def main():
                     old[row["source"]] = row
     staging = index.with_suffix(".partial.csv")
     with ThreadPoolExecutor(a.jobs) as pool, staging.open("w", newline="", encoding="utf-8-sig") as f:
-        for row in pool.map(lambda s: old.get(s.relative_to(a.source).as_posix()) or export(s, a.source, a.out, ffmpeg, vgmstream), inputs):
+        for row in pool.map(convert, inputs):
             if not rows:
                 writer = csv.DictWriter(f, fieldnames=row)
                 writer.writeheader()
@@ -182,6 +187,21 @@ def main():
     (a.out / "index.html").write_text('<meta charset=utf-8><title>NekoConne | USM</title>'
         '<style>body{background:#1b2126;color:#eee;font:16px sans-serif}main{display:flex;gap:1em;flex-wrap:wrap}'
         'a{color:#bef;display:block}img{width:256px}</style><h1>USM / VP9</h1><main>' + cards + '</main>', encoding="utf-8")
+
+
+    return rows
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--source", type=Path, required=True, help="game resources directory")
+    p.add_argument("--out", type=Path, default=DEST)
+    p.add_argument("--ffmpeg", type=Path)
+    p.add_argument("--vgmstream", type=Path, help="local vgmstream-cli for supported HCA audio tracks")
+    p.add_argument("--jobs", type=int, default=2)
+    p.add_argument("--retry-failed", action="store_true", help="keep previous entries whose outputs still exist")
+    if not export_all(p.parse_args()):
+        p.error("No CRI USM input found")
 
 
 if __name__ == "__main__":

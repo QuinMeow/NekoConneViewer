@@ -4,9 +4,7 @@ from pathlib import Path
 import runpy
 import sys
 from types import ModuleType
-
-WORKERS = {"export_builtin", "export_images", "export_cubism", "export_video",
-           "export_audio", "import_bundles", "render_native", "render_spine"}
+from viewer_runtime import WORKERS
 
 
 def main():

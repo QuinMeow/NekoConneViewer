@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.import_bundles import Image, Importer, run
+from tools.import_bundles import Image, Importer
+from tools.scan_assets import import_local
 
 
 class ExternalImportTests(unittest.TestCase):
@@ -16,19 +17,21 @@ class ExternalImportTests(unittest.TestCase):
                 (src / group).mkdir(parents=True)
                 Image.new('RGB', (5, 3), color).save(src / group / 'texture', format='DDS')
             (src / 'plain.dds').write_bytes(b'plain data')
-            (src / 'data.unity3d').write_bytes(b'UnityFS\0' + bytes(20))
             originals = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in src.rglob('*') if p.is_file()}
-            manifest = run(src, root / 'cache', [src / 'data.unity3d'])
-            result = json.loads(manifest.read_text(encoding='utf-8'))
-            self.assertEqual(result['counts'], {'DDS': 2, 'UnityFS': 0, 'unknown': 1, 'skipped': 1})
-            self.assertEqual(len({r['file'] for r in result['assets']}), 2)
-            for asset in result['assets']:
-                with Image.open(manifest.parent / asset['file']) as image:
+            cache = root / 'cache'
+            import_local(src, cache)
+            manifest, = (cache / 'index').glob('assets-*.json')
+            report, = (cache / 'index').glob('report-*.json')
+            assets = json.loads(manifest.read_text(encoding='utf-8'))
+            self.assertEqual(len({r['file'] for r in assets}), 2)
+            self.assertEqual(json.loads(report.read_text(encoding='utf-8'))['issues'][0]['status'], 'unrecognized')
+            for asset in assets:
+                with Image.open(cache / asset['file']) as image:
                     self.assertEqual(image.size, (5, 3))
-                    self.assertEqual(image.getpixel((0, 0))[:3], (255, 0, 0) if asset['source'] == 'a/texture' else (0, 0, 255))
+                    self.assertEqual(image.getpixel((0, 0))[:3], (255, 0, 0) if asset['source'].endswith('/a/texture') else (0, 0, 255))
             self.assertEqual({p: hashlib.sha256(p.read_bytes()).hexdigest() for p in originals}, originals)
             with self.assertRaisesRegex(ValueError, 'separate'):
-                run(src, src / 'cache')
+                import_local(src, src / 'cache')
 
     def test_model_only_when_unique_and_complete(self):
         with tempfile.TemporaryDirectory() as d:

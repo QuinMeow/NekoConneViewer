@@ -3,13 +3,13 @@
 import json
 import os
 from pathlib import Path
-import struct
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
-import zlib
 
 try:
     import tkinter as tk
@@ -17,14 +17,6 @@ except ImportError:
     tk = None
 else:
     import viewer_gui as ui
-
-
-def tiny_png():
-    def chunk(kind, data):
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    pixels = b"\0\x21\x52\xbb\xff"
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">2I5B", 1, 1, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
 
 
 @unittest.skipIf(tk is None, "Tkinter is not installed")
@@ -40,12 +32,22 @@ class ViewerSmokeTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.work = Path(folder.name)
         self.cache = self.work / "cache"
-        self.image_path = self.cache / "builtin/images/BluePixel.png"
+        self.image_path = self.cache / "images/BluePixel.png"
         self.image_path.parent.mkdir(parents=True)
-        self.image_path.write_bytes(tiny_png())
-        model = self.cache / "builtin/cubism/Synthetic/Synthetic.model3.json"
+        pixel = tk.PhotoImage(master=self.root, width=1, height=1)
+        pixel.put("#2152bb")
+        pixel.write(str(self.image_path), format="png")
+        model = self.cache / "live2d/Synthetic/Synthetic.model3.json"
         model.parent.mkdir(parents=True)
         model.write_text(json.dumps({"FileReferences": {"Motions": {"Idle": [{"File": "idle.motion3.json"}]}}}))
+        index = self.cache / "index/assets.json"
+        index.parent.mkdir()
+        index.write_text(json.dumps([
+            {"kind": "image", "category": "images", "file": self.image_path.relative_to(self.cache).as_posix(),
+             "title": "BluePixel"},
+            {"kind": "cubism", "category": "live2d", "file": model.relative_to(self.cache).as_posix(),
+             "title": "Synthetic"},
+        ]), encoding="utf8")
         self.stub(patch.dict(os.environ, {"NEKOCONNE_CACHE": str(self.cache)}))
         self.stub(patch.object(ui.core, "detect_game", return_value=self.work / "example-game"))
         self.stub(patch.object(ui.messagebox, "showerror", side_effect=AssertionError("Unexpected error dialog")))
@@ -75,29 +77,54 @@ class ViewerSmokeTest(unittest.TestCase):
         v.show_preview()
 
     def test_search_preview_copy_and_wallpaper(self):
-        self.select("image", "bluepixel")
+        self.select(ui.JOBS["images"], "bluepixel")
         self.assertIsNotNone(self.viewer.photo)
         out = self.work / "output"
         out.mkdir()
         self.stub(patch.object(ui.filedialog, "askdirectory", return_value=str(out)))
         self.viewer.action("copy")
         self.wait_idle()
-        self.assertEqual((out / self.image_path.name).read_bytes(), tiny_png())
+        self.assertEqual((out / self.image_path.name).read_bytes(), self.image_path.read_bytes())
         # The backend generates a JPEG project thumbnail using the optional Pillow dependency.
         if ui.Image is not None:
             self.viewer.action("wallpaper")
             self.wait_idle()
-            project = next(out.glob("*/project.json"))
+            project = next((self.cache / "wallpapers").glob("*/project.json"))
             meta = json.loads(project.read_text(encoding="utf8"))
             self.assertTrue((project.parent / meta["file"]).is_file())
-            self.assertEqual((project.parent / "media.png").read_bytes(), tiny_png())
+            self.assertEqual((project.parent / "media.png").read_bytes(), self.image_path.read_bytes())
+
+    def test_delayed_stop_cannot_terminate_a_subsequent_worker(self):
+        gate = threading.Event()
+        class Delayed(threading.Thread):
+            def run(self):
+                if gate.wait(5):
+                    super().run()
+        def sleeper():
+            p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            def finish():
+                if p.poll() is None:
+                    p.kill()
+                p.wait(timeout=5)
+            self.addCleanup(finish)
+            return p
+        first, second = sleeper(), sleeper()
+        with patch.object(ui.threading, "Thread", Delayed), patch.object(ui.shutil, "which", return_value=None):
+            self.viewer.process = first
+            self.viewer.stop()
+            self.viewer.process = second
+            gate.set()
+            first.wait(timeout=3)
+            self.assertIsNone(second.poll())
 
     def test_motion_subprocess_log_and_exit_code(self):
-        self.select("cubism")
+        self.select(ui.JOBS["live2d"])
         self.assertEqual(self.viewer.motion_choice.get(), "Idle / idle.motion3.json")
         # Exercise the subprocess and UI event loop without loading a real Cubism model.
         cmd = [sys.executable, "-u", "-c", "print('synthetic motion job');raise SystemExit(7)"]
         render = self.stub(patch.object(ui.core, "render_command", return_value=cmd))
+        self.stub(patch.object(self.viewer, "render_options", return_value={"width": 1920, "height": 1080}))
         self.viewer.render_motion()
         self.assertTrue(self.viewer.busy)
         self.wait_idle()
@@ -105,6 +132,27 @@ class ViewerSmokeTest(unittest.TestCase):
         self.assertIn("synthetic motion job", self.viewer.log.get("1.0", "end"))
         self.assertIn(": 7", self.viewer.status.get())
         self.assertEqual({a.kind for a in self.viewer.assets}, {"cubism", "image"})
+
+    def test_batch_live2d_enabled_and_runs_each_motion_with_shared_settings(self):
+        self.select(ui.JOBS["live2d"])
+        v = self.viewer
+        self.assertNotIn("disabled", v.batch_button.state())
+        choices = {"Idle / idle.motion3.json": ("Idle", 0), "Action / wave.motion3.json": ("Action", 0)}
+        v.set_motions(choices)
+        select = self.stub(patch.object(v, "choose_batch", side_effect=lambda k, same, everything: everything))
+        options = self.stub(patch.object(v, "render_options", return_value={"width": 1920, "height": 1080}))
+        cmd = [sys.executable, "-u", "-c", "print('synthetic batch motion')"]
+        render = self.stub(patch.object(ui.core, "render_command", return_value=cmd))
+        v.batch_button.invoke()
+        self.assertIn("disabled", v.batch_button.state())
+        self.wait_idle()
+        self.assertEqual(len(select.call_args.args[1]), 1)
+        self.assertEqual(len(select.call_args.args[2]), 2)
+        options.assert_called_once()
+        self.assertEqual([call.args[2] for call in render.call_args_list], ["Idle", "Action"])
+        self.assertTrue(all(call.kwargs["width"] == 1920 for call in render.call_args_list))
+        self.select(ui.JOBS["images"])
+        self.assertIn("disabled", v.batch_button.state())
 
 
 if __name__ == "__main__":
