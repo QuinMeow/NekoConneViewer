@@ -31,7 +31,7 @@ class LibraryTests(unittest.TestCase):
         asset, = core.library(self.cache)
         self.assertEqual(core.motion_choices(asset), {"Idle / idle.motion3.json": ("Idle", 0)})
         command = core.render_command(asset, self.cache, "Idle", 0)
-        self.assertEqual(Path(command[3]), self.model)
+        self.assertTrue(Path(command[3]).samefile(self.model))
         with self.assertRaises(ValueError):
             core.render_command(asset, self.cache, "Idle", 12)
 
