@@ -1,0 +1,105 @@
+name: Build Windows portable
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.10'
+          architecture: x64
+      - name: Install freezer and tested codec versions
+        run: >-
+          python -m pip install -r requirements.txt PyInstaller==6.22.3
+          moderngl==5.12.0 glcontext==3.0.0
+          astc-encoder-py==0.1.12 etcpak==0.9.15 texture2ddecoder==1.0.6
+      - name: Test source
+        run: python -m unittest discover -s tests -v
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          install: >-
+            make perl diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-pkgconf
+      - name: Fetch and verify upstream media sources
+        run: python packaging/media.py --prepare
+      - name: Build native media tools
+        shell: msys2 {0}
+        env:
+          BUILD_JOBS: '4'
+        run: |
+          set -euo pipefail
+          bash packaging/build_ffmpeg.sh
+          "$(cygpath -u "$pythonLocation")/python.exe" packaging/build_vgmstream.py --jobs 4
+      - name: Freeze Windows app and assemble both archives
+        run: python packaging/build_windows.py
+      - name: Smoke-test an extracted release, not the build tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = 'dist/NekoConneViewer-windows-x64.zip'
+          $source = 'dist/NekoConneViewer-media-sources-windows-x64.zip'
+          $staging = Join-Path $env:RUNNER_TEMP 'portable smoke'
+          python -m zipfile -t $source
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Expand-Archive -LiteralPath $binary -DestinationPath $staging
+          $app = Join-Path $staging NekoConneViewer
+          python packaging/smoke_windows.py $app --gui
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($path in @('.tools/video/ffmpeg.exe', '.tools/audio/vgmstream-r2168/vgmstream-cli.exe', 'THIRD_PARTY_LICENSES/media/SOURCES.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $app $path) -PathType Leaf)) { throw "Missing release file: $path" }
+          }
+          $lines = foreach ($path in @($binary, $source)) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() + '  ' + (Split-Path $path -Leaf)
+          }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64
+          path: |
+            dist/NekoConneViewer-windows-x64.zip
+            dist/NekoConneViewer-media-sources-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-x64
+          path: release-assets
+      - name: Publish verified tag and corresponding source together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: >-
+          gh release create "$env:TAG" --repo "$env:REPO" --verify-tag --title "$env:TAG" --generate-notes
+          release-assets/NekoConneViewer-windows-x64.zip
+          release-assets/NekoConneViewer-media-sources-windows-x64.zip
+          release-assets/SHA256SUMS.txt

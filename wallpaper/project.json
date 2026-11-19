@@ -1,0 +1,12 @@
+{
+  "title": "NekoConne | Afternoon Light",
+  "description": "Local study using the in-game 10106_01_S01 Cubism character and its five original motion clips. Click to play an action. Optional title-art camera drift is a separate effect.",
+  "type": "web",
+  "file": "index.html",
+  "preview": "preview.jpg",
+  "general": {
+    "properties": {
+      "titleart": { "order": 0, "text": "Show title illustration instead", "type": "bool", "value": false }
+    }
+  }
+}

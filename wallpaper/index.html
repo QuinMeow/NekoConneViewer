@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN" data-view="character">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>NekoConne | Afternoon Light</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body, main { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #e7c6a6; }
+    main { position: relative; isolation: isolate; }
+    .art { position: absolute; inset: -1.25%; transform: translate(var(--x, 0px), var(--y, 0px)); transition: transform 1.4s ease-out; }
+    .art img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: 59% 50%; animation: drift 38s ease-in-out infinite alternate; }
+    .actor { position: absolute; top: 1%; left: 63%; height: 114%; aspect-ratio: 1200/1400; transform: translateX(-50%); border: 0; padding: 0; background: transparent; cursor: pointer; }
+    .actor:focus-visible { outline: 2px solid #42889d; outline-offset: -4px; }
+    .actor video { width: 100%; height: 100%; display: block; pointer-events: none; }
+    .actor img { display: none; width: 100%; height: 100%; object-fit: contain; }
+    .actor[data-still] video { display: none; }
+    .actor[data-still] img { display: block; }
+    [data-view="title"] .actor { display: none; }
+    @media(max-aspect-ratio: 1/1) { .actor { left: 51%; } }
+    .light, .dust { position: absolute; inset: 0; pointer-events: none; }
+    .light { background: linear-gradient(126deg, #fff3cd38, transparent 43%, transparent 100%); animation: afternoon 16s ease-in-out infinite alternate; }
+    .dust i { position: absolute; border-radius: 50%; background: #fff6df; opacity: 0; box-shadow: 0 0 4px #fff4d6; animation: float var(--period) ease-in-out var(--delay) infinite; }
+    @keyframes drift { from { transform: scale(1); } to { transform: scale(1.022) translateX(-.22%); } }
+    @keyframes afternoon { from { opacity: .18; } to { opacity: .82; } }
+    @keyframes float { 0%, 100% { opacity: 0; } 25% { opacity: .45; } 85% { opacity: 0; } 100% { transform: translate(17px, -46px); } }
+    @media(prefers-reduced-motion: reduce) {
+      .art { transform: none; transition: none; }
+      .art img, .light, .dust i { animation: none; }
+      .light, .dust { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main aria-label="NekoConne wallpaper">
+    <div class="art"><img src="garden.jpg" alt="NekoConne garden" draggable="false"></div>
+    <button class="actor" type="button" aria-label="播放下一个游戏角色动作">
+      <video src="idle.webm" poster="portrait.webp" muted autoplay playsinline loop></video>
+      <img src="portrait.webp" alt="NekoConne character" draggable="false">
+    </button>
+    <div class="light" aria-hidden="true"></div>
+    <div class="dust" aria-hidden="true"></div>
+  </main>
+  <script>
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    const art = document.querySelector('.art');
+    const dust = document.querySelector('.dust');
+    const actor = document.querySelector('.actor');
+    const video = actor.querySelector('video');
+    const actions = JSON.parse(document.documentElement.dataset.actions || '["motion_100.webm","motion_200.webm","motion_300.webm","motion_400.webm"]');
+    let nextAction = 0, paused = false;
+    function syncPlayback() {
+      const still = reduced.matches || !!video.error;
+      actor.toggleAttribute('data-still', still);
+      if (paused || document.hidden || document.documentElement.dataset.view === 'title' || still) video.pause();
+      else video.play().catch(error => {
+        if (error.name !== 'AbortError') actor.setAttribute('data-still', '');
+      });
+    }
+    function scene(title) {
+      document.documentElement.dataset.view = title ? 'title' : 'character';
+      art.firstElementChild.src = title ? 'art.jpg' : 'garden.jpg';
+      art.firstElementChild.alt = title ? 'NekoConne title illustration' : 'NekoConne garden';
+      syncPlayback();
+    }
+    function playClip(file, loop) {
+      video.loop = loop;
+      video.src = file;
+      syncPlayback();
+    }
+    actor.addEventListener('click', () => {
+      if (reduced.matches || paused || !actions.length) return;
+      playClip(actions[nextAction], false);
+      nextAction = (nextAction + 1) % actions.length;
+    });
+    video.addEventListener('ended', () => playClip('idle.webm', true));
+    video.addEventListener('error', syncPlayback);
+    reduced.addEventListener('change', syncPlayback);
+    document.addEventListener('visibilitychange', syncPlayback);
+    window.wallpaperPropertyListener = {
+      applyUserProperties(p) { if (p.titleart) scene(p.titleart.value); },
+      setPaused(value) { paused = value; syncPlayback(); }
+    };
+    scene(new URLSearchParams(location.search).get('view') === 'title');
+    for (let i = 0; i < 11; i++) {
+      const mote = document.createElement('i');
+      const size = 1.2 + (i % 3) * .7;
+      mote.style.cssText = `left:${(i * 37 + 5) % 99}%;top:${(i * 23 + 21) % 98}%;width:${size}px;height:${size}px;--period:${10 + i % 5}s;--delay:-${i * 1.7}s`;
+      dust.append(mote);
+    }
+    addEventListener('pointermove', event => {
+      if (reduced.matches) return;
+      art.style.setProperty('--x', `${(event.clientX / innerWidth - .5) * 7}px`);
+      art.style.setProperty('--y', `${(event.clientY / innerHeight - .5) * 4}px`);
+    });
+    document.documentElement.addEventListener('pointerleave', () => {
+      art.style.removeProperty('--x');
+      art.style.removeProperty('--y');
+    });
+  </script>
+</body>
+</html>
