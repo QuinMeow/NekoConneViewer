@@ -13,7 +13,7 @@ class ParallelScanTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = Path(tmp.name).resolve()
         self.game = self.root / "game"
         self.resources = self.game / "resources"
         self.resources.mkdir(parents=True)
