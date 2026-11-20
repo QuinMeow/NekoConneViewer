@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light;
+  --ink: #463c37;
+  --accent: #975947;
+  font-family: "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body, main { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+body { background: #283448; }
+main { position: relative; }
+#background, canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#background { object-fit: cover; pointer-events: none; user-select: none; }
+canvas { touch-action: none; }
+#controls, #status {
+  position: fixed;
+  color: var(--ink);
+  background: #fffaf2f5;
+  border: 1px solid #fff9;
+  border-radius: 8px;
+  box-shadow: 0 3px 18px #392f2824;
+}
+#controls { left: 14px; top: 14px; width: min(240px, calc(100vw - 28px)); }
+#controls summary { padding: 10px 14px; cursor: pointer; font-size: 14px; font-weight: 600; }
+#controls form { display: grid; gap: 8px; padding: 2px 14px 14px; }
+#controls label { display: grid; align-items: center; grid-template-columns: 6em minmax(0, 1fr); gap: 5px; font-size: 12px; }
+#controls :is(input,select) { margin: 0; min-width: 0; accent-color: var(--accent); color: var(--ink); font: inherit; }
+#controls [type=checkbox] { justify-self: start; }
+#status { left: 14px; bottom: 14px; padding: 8px 14px; max-width: calc(100vw - 28px); font-size: 13px; }
+[hidden] { display: none !important; }

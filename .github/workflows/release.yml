@@ -26,7 +26,10 @@ jobs:
           moderngl==5.12.0 glcontext==3.0.0
           astc-encoder-py==0.1.12 etcpak==0.9.15 texture2ddecoder==1.0.6
       - name: Test source
-        run: python -m unittest discover -s tests -v
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --test tests/test_duo_scene.cjs tests/test_duo_renderer.cjs
       - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
@@ -63,7 +66,7 @@ jobs:
           $app = Join-Path $staging NekoConneViewer
           python packaging/smoke_windows.py $app --gui
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          foreach ($path in @('.tools/video/ffmpeg.exe', '.tools/audio/vgmstream-r2168/vgmstream-cli.exe', 'THIRD_PARTY_LICENSES/media/SOURCES.txt')) {
+          foreach ($path in @('.tools/video/ffmpeg.exe', '.tools/audio/vgmstream-r2168/vgmstream-cli.exe', 'THIRD_PARTY_LICENSES/media/SOURCES.txt', '_internal/wallpaper/host.js', '_internal/wallpaper/spine/index.html', '_internal/wallpaper/spine/card.js')) {
             if (-not (Test-Path -LiteralPath (Join-Path $app $path) -PathType Leaf)) { throw "Missing release file: $path" }
           }
           $lines = foreach ($path in @($binary, $source)) {

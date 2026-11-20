@@ -7,7 +7,8 @@ root = Path(SPECPATH).parent
 sys.path.insert(0, str(root))
 from viewer_runtime import WORKERS
 datas = [(str(root / name), str(Path(name).parent))
-         for name in ("wallpaper/index.html", "wallpaper/project.json")]
+         for name in ("wallpaper/index.html", "wallpaper/project.json",
+                      "wallpaper/spine/index.html", "wallpaper/spine/card.js", "wallpaper/host.js")]
 datas += collect_data_files("archspec", includes=["json/**/*.json"])
 datas += collect_data_files("UnityPy", includes=["resources/*.tpk"])
 a = Analysis(

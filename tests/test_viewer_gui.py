@@ -96,6 +96,35 @@ class ViewerSmokeTest(unittest.TestCase):
             self.assertTrue((project.parent / meta["file"]).is_file())
             self.assertEqual((project.parent / "media.png").read_bytes(), self.image_path.read_bytes())
 
+    def test_generate_wallpaper_button_exports_spine_card_as_native_html(self):
+        from tools import build_spine_wallpaper
+
+        path = self.cache / "spine/Card/Card.skel"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\0" * 8 + b"\x074.1.11")
+        path.with_suffix(".atlas").write_text("Card.png\nsize:32,32\n", encoding="ascii")
+        path.with_suffix(".png").write_bytes(b"fixture atlas image")
+        asset = ui.core.Asset("spine", "Card", path, category="spine")
+        meta = {"skins": ["default"], "animations": [{"name": "animation"}]}
+        self.stub(patch.object(ui.core, "spine_meta", return_value=meta))
+        self.stub(patch.object(build_spine_wallpaper, "web_runtime", return_value=(b"runtime", b"license")))
+        self.viewer.set_library([asset])
+        self.select(ui.JOBS["spine"], "Card")
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        button, = (widget for widget in descendants(self.root)
+                   if isinstance(widget, ui.ttk.Button) and widget.cget("text") == "生成壁纸…")
+        button.invoke()
+        self.wait_idle()
+        project = self.cache / "wallpapers/NekoConne-Card-Spine"
+        self.assertIn("spine-webgl.js", (project / "index.html").read_text(encoding="utf8"))
+        self.assertTrue((project / "model-data.js").is_file())
+        self.assertFalse(list(project.glob("*.webm")))
+
     def test_delayed_stop_cannot_terminate_a_subsequent_worker(self):
         gate = threading.Event()
         class Delayed(threading.Thread):

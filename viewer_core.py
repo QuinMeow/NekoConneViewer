@@ -239,6 +239,13 @@ def wallpaper(asset, destination):
     if asset.kind == "cubism":
         from tools.build_scene import build
         return build(asset, asset.path.parents[2], Path(destination))
+    if asset.kind == "spine":
+        from tools.build_spine_wallpaper import build
+        name = re.sub(r"[^\w-]", "_", asset.path.stem)
+        folder = Path(destination).resolve() / f"NekoConne-{name}-Spine"
+        if folder.exists():
+            raise FileExistsError(folder)
+        return build(asset.path, folder, asset.title, metadata=spine_meta(asset))
     if asset.kind not in {"image", "portrait", "video", "action"}:
         raise ValueError("Select a finished image or video. Render a model motion to video first.")
     if not asset.path.is_file():

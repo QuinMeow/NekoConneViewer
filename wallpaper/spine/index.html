@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NekoConne | Spine</title>
+<script src="host.js"></script>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  output { position: absolute; bottom: 1rem; left: 1rem; padding: .55em .8em;
+    color: #fff; background: #222; font: 14px sans-serif; }
+</style>
+<canvas id="card" aria-label="Spine 卡面动画" aria-busy="true"></canvas>
+<output id="status">正在加载 Spine 卡面…</output>
+<script src="spine-webgl.js"></script>
+<script src="model-data.js"></script>
+<script src="card.js"></script>
+</html>

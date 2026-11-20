@@ -6,7 +6,6 @@
 /dist/
 /build/
 /.build/
-/tools/export_audio_qa.py
 .env
 .env.*
 *.pem
@@ -18,5 +17,15 @@
 /wallpaper/*
 !/wallpaper/index.html
 !/wallpaper/project.json
+!/wallpaper/host.js
+!/wallpaper/duo/
+/wallpaper/duo/*
+!/wallpaper/duo/*.html
+!/wallpaper/duo/*.css
+!/wallpaper/duo/*.js
+!/wallpaper/spine/
+/wallpaper/spine/*
+!/wallpaper/spine/index.html
+!/wallpaper/spine/card.js
 __pycache__/
 *.py[cod]

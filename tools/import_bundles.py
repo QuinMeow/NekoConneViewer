@@ -3,7 +3,7 @@
 import hashlib
 import json
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 import re
 import shutil
 import stat
@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / '.tools/unity'))
 from PIL import Image
 import UnityPy
 from fsspec.implementations.memory import MemoryFileSystem
+from tools.spine_assets import atlas_pages
 
 
 def slug(value):
@@ -48,26 +49,6 @@ def files(source, issue):
             except OSError as exc:
                 issue(rel, str(exc))
         dirs.sort()
-
-
-def atlas_pages(data):
-    pages = []
-    for block in re.split(r'\n[ \t]*\n+', data.decode('utf-8-sig').replace('\r', '').strip()):
-        name = block.split('\n', 1)[0].strip()
-        if not re.fullmatch(r'[\w .()-]+\.png', name, re.I) or PureWindowsPath(name).is_reserved():
-            raise ValueError(f'unsupported atlas page filename: {name!r}')
-        if name.casefold() in {p[0].casefold() for p in pages}:
-            raise ValueError('duplicate page name')
-        fields = block.splitlines()[1:]
-        size = None
-        for line in fields:
-            if ':' not in line:
-                break
-            match = re.fullmatch(r'\s*size:\s*(\d+)\s*,\s*(\d+)\s*', line, re.I)
-            if match:
-                size = tuple(map(int, match.groups()))
-        pages.append((name, size))
-    return pages
 
 
 class Importer:

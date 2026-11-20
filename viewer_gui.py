@@ -829,7 +829,8 @@ class Viewer:
             if self.game.get().strip() and Path(folder).resolve().is_relative_to(Path(self.game.get()).expanduser().resolve()):
                 messagebox.showerror("输出位置", "请选择游戏安装目录以外的位置。", parent=self.root)
                 return
-            self.status.set("正在写入选中素材…")
+            self.status.set("正在打包原生 Spine 网页壁纸…" if action == "wallpaper" and asset.kind == "spine"
+                            else "正在写入选中素材…")
             fn = core.copy_asset if action == "copy" else core.wallpaper
             self.launch(lambda: self.events.put(("status", f"已生成：{fn(asset, Path(folder))}")))
 
